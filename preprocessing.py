@@ -2,7 +2,7 @@
 import os
 import pandas as pd
 import ants
-
+import numpy as np
 # On titouan's workstation do source ~/.bash_profile before running the script
 
 # Paths definitions
@@ -14,7 +14,7 @@ preprocessed_dir_WS = r"/home/user/Documents/raph/Preprocessed_images"
 template_address = r'/home/user/Documents/raph/u_net/template_registration/MNI152_T1_1mm_brain.nii.gz'
 
 # Path to the temporary directory where the preprocessed images will be saved
-temp_save_location = "/home/user/Documents/raph/temp"
+temp_save_location = r'/home/user/Documents/raph/temp'
 
 # Global variables
 session_id = "0001"  # Only 0001 is available for the ISLES 2022 dataset
@@ -47,52 +47,61 @@ def bias_field_correction(img_paths):
     new_img_paths.append(img_paths[-1])  # Add the mask to the list
     return new_img_paths
 
-def registration(img_paths, template_address, parameters):
+def registration(img_paths, template_address):
     new_img_paths = []
-    data=[]
-    # Load the template image using ANTs
+    registered_img = []
     template = ants.image_read(template_address)
 
-    # Create ANTs images from numpy arrays
-    imgs = {}
-    for i in range(len(img_paths)):
-        imgs[f"{parameters[i]}_img"] = ants.image_read(img_paths[i])
-        new_img_paths.append(img_paths[i].replace('corrected.nii.gz', 'registered.nii.gz'))
-        
-    # DWI
-    registration_DWI = ants.registration(fixed=template, moving=imgs['dwi_img'], type_of_transform='Rigid')
-    data.append(registration_DWI['warpedmovout'])
+    #DWI
+    registration_DWI = ants.registration(fixed=template, moving=ants.image_read(img_paths[1]), type_of_transform='Rigid', interpolator='lanczosWindowedSinc')
+    registered_img.append(registration_DWI['warpedmovout'])
+    new_img_paths.append(img_paths[1].replace('corrected.nii.gz', 'registered.nii.gz'))
 
-    # ADC
-    data.append(ants.apply_transforms(fixed=template, moving=imgs['adc_img'], interpolator='lanczosWindowedSinc',
-                                           transformlist=registration_DWI['fwdtransforms']))
+    #ADC
+    registered_img.append(registration_DWI['warpedmovout'])
+    new_img_paths.append(img_paths[0].replace('corrected.nii.gz', 'registered.nii.gz'))
 
     # FLAIR (via DWI)
-    registration_FLAIR2DWI = ants.registration(fixed=imgs['dwi_img'], moving=imgs['FLAIR_img'], type_of_transform='Rigid')
-
-    data.append(ants.apply_transforms(fixed=template, moving=imgs['FLAIR_img'],
-                                              interpolator='lanczosWindowedSinc',
-                                              transformlist=registration_DWI['fwdtransforms'] +
-                                                           registration_FLAIR2DWI['fwdtransforms']))
+    registration_FLAIR2DWI = ants.registration(fixed=ants.image_read(img_paths[0]), moving=ants.image_read(img_paths[2]), type_of_transform='Rigid', interpolator='lanczosWindowedSinc')
+    registered_img.append(ants.apply_transforms(fixed=ants.image_read(img_paths[0]), moving=ants.image_read(img_paths[2]),
+                                                    interpolator='lanczosWindowedSinc',
+                                                    transformlist=registration_DWI['fwdtransforms'] + registration_FLAIR2DWI['fwdtransforms']))
+    new_img_paths.append(img_paths[2].replace('corrected.nii.gz', 'registered.nii.gz'))
+            
     # MASK
-    data.append(ants.apply_transforms(fixed=template, moving=imgs['msk_img'], interpolator='nearestNeighbor',
-                                         transformlist=registration_DWI['fwdtransforms']))
+    registered_img.append(ants.apply_transforms(fixed=template, moving=ants.image_read(img_paths[3]), interpolator='nearestNeighbor',
+                                                    transformlist=registration_DWI['fwdtransforms']))
+    new_img_paths.append(img_paths[3].replace('brainExtracted.nii.gz', 'registered.nii.gz'))
 
-    data[0], data[1] = data[1], data[0]  # Swap the DWI and ADC images to put them back in the right order
+    new_img_paths[0], new_img_paths[1] = new_img_paths[1], new_img_paths[0]
+    registered_img[0], registered_img[1] = registered_img[1], registered_img[0]
 
     for i in range(len(new_img_paths)):
-        ants.image_write(data[i], new_img_paths[i])
+        ants.image_write(registered_img[i], new_img_paths[i])  
 
     return new_img_paths
+
 
 def zscore_normalisation(img_paths):
     new_img_paths = []
     for i in range(len(img_paths)-1): # Exclude the mask
         new_img_paths.append(img_paths[i].replace('registered.nii.gz', 'zscore.nii.gz'))
-        img_np = ants.image_read(img_paths[i]).numpy()
-        img_np = (img_np - img_np.mean()) / img_np.std()
-        img = ants.from_numpy(img_np)
-        ants.image_write(img, new_img_paths[i])
+        img = ants.image_read(img_paths[i])
+        img_np = img.numpy()
+
+        # Extract non-zero pixels
+        binary_mask = np.where(img_np != 0, 1, 0).astype("float32")
+        
+        # Apply z-score normalization only to non-zero pixels
+        img_np = binary_mask * ((img_np - img_np.mean().astype("float32")) / img_np.std().astype("float32"))
+        
+        # Create an ANTs image from the normalized numpy array
+        normalized_img = ants.from_numpy(img_np, spacing=img.spacing,origin=img.origin, direction=img.direction)
+        
+        # Write the normalized image to the new path
+        ants.image_write(normalized_img, new_img_paths[i])
+
+    new_img_paths.append(img_paths[-1])  # Add the mask to the list
     return new_img_paths
 
 
@@ -188,7 +197,7 @@ for subject_id in subject_ids[:5]:
     temp_img_paths=bias_field_correction(temp_img_paths)
 
     # Perform the registration
-    temp_img_paths=registration(temp_img_paths, template_address, parameters)
+    temp_img_paths=registration(temp_img_paths, template_address)
 
     # Perform intensity normalization
     temp_img_paths=zscore_normalisation(temp_img_paths)
