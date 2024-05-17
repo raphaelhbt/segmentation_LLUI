@@ -2,7 +2,7 @@
 import os
 import pandas as pd
 import ants
-import numpy as np
+
 # On titouan's workstation do source ~/.bash_profile before running the script
 
 # Paths definitions
@@ -58,7 +58,8 @@ def registration(img_paths, template_address):
     new_img_paths.append(img_paths[1].replace('corrected.nii.gz', 'registered.nii.gz'))
 
     #ADC
-    registered_img.append(registration_DWI['warpedmovout'])
+    registered_img.append(ants.apply_transforms(fixed=template, moving=ants.image_read(img_paths[0]), interpolator='lanczosWindowedSinc',
+                                                    transformlist=registration_DWI['fwdtransforms']))
     new_img_paths.append(img_paths[0].replace('corrected.nii.gz', 'registered.nii.gz'))
 
     # FLAIR (via DWI)
@@ -84,26 +85,27 @@ def registration(img_paths, template_address):
 
 def zscore_normalisation(img_paths):
     new_img_paths = []
-    for i in range(len(img_paths)-1): # Exclude the mask
-        new_img_paths.append(img_paths[i].replace('registered.nii.gz', 'zscore.nii.gz'))
-        img = ants.image_read(img_paths[i])
+    for img_path in img_paths[:-1]:  # Exclude the mask
+        new_path = img_path.replace('registered.nii.gz', 'zscore.nii.gz')
+        new_img_paths.append(new_path)
+        img = ants.image_read(img_path)
         img_np = img.numpy()
 
-        # Extract non-zero pixels
-        binary_mask = np.where(img_np != 0, 1, 0).astype("float32")
-        
-        # Apply z-score normalization only to non-zero pixels
-        img_np = binary_mask * ((img_np - img_np.mean().astype("float32")) / img_np.std().astype("float32"))
-        
+        # Calculate mean and standard deviation for the entire image
+        mean = img_np.mean()
+        std = img_np.std()
+
+        # Perform z-score normalization
+        normalized_img_np = (img_np - mean) / std
+
         # Create an ANTs image from the normalized numpy array
-        normalized_img = ants.from_numpy(img_np, spacing=img.spacing,origin=img.origin, direction=img.direction)
-        
+        normalized_img = ants.from_numpy(normalized_img_np, spacing=img.spacing, origin=img.origin, direction=img.direction)
+
         # Write the normalized image to the new path
-        ants.image_write(normalized_img, new_img_paths[i])
+        ants.image_write(normalized_img, new_path)
 
     new_img_paths.append(img_paths[-1])  # Add the mask to the list
     return new_img_paths
-
 
 
 #Helpers functions
@@ -183,7 +185,7 @@ def save_images(subject_id, session_id, parameters, save_location, img_paths):
 
 # MAIN
 subject_ids = get_patient_ids(os.path.join(bids_dir_WS, 'participants.tsv'))
-for subject_id in subject_ids[:5]:
+for subject_id in subject_ids[:3]:
     if choice_brain_extraction == "Y":
 
         # Perform the brain extraction only for the datasets for which it hasn't been done yet (you can comment this line if you don't want to perform the brain extraction for the dataset)
