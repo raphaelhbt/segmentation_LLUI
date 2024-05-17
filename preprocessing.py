@@ -2,6 +2,7 @@
 import os
 import pandas as pd
 import ants
+import numpy as np
 
 # On titouan's workstation do source ~/.bash_profile before running the script
 
@@ -52,28 +53,29 @@ def registration(img_paths, template_address):
     registered_img = []
     template = ants.image_read(template_address)
 
-    #DWI
+    # DWI
     registration_DWI = ants.registration(fixed=template, moving=ants.image_read(img_paths[1]), type_of_transform='Rigid', interpolator='lanczosWindowedSinc')
     registered_img.append(registration_DWI['warpedmovout'])
     new_img_paths.append(img_paths[1].replace('corrected.nii.gz', 'registered.nii.gz'))
 
-    #ADC
+    # ADC
     registered_img.append(ants.apply_transforms(fixed=template, moving=ants.image_read(img_paths[0]), interpolator='lanczosWindowedSinc',
-                                                    transformlist=registration_DWI['fwdtransforms']))
+                                                transformlist=registration_DWI['fwdtransforms']))
     new_img_paths.append(img_paths[0].replace('corrected.nii.gz', 'registered.nii.gz'))
 
     # FLAIR (via DWI)
-    registration_FLAIR2DWI = ants.registration(fixed=ants.image_read(img_paths[0]), moving=ants.image_read(img_paths[2]), type_of_transform='Rigid', interpolator='lanczosWindowedSinc')
-    registered_img.append(ants.apply_transforms(fixed=ants.image_read(img_paths[0]), moving=ants.image_read(img_paths[2]),
-                                                    interpolator='lanczosWindowedSinc',
-                                                    transformlist=registration_DWI['fwdtransforms'] + registration_FLAIR2DWI['fwdtransforms']))
+    registration_FLAIR2DWI = ants.registration(fixed=ants.image_read(img_paths[1]), moving=ants.image_read(img_paths[2]), type_of_transform='Rigid', interpolator='lanczosWindowedSinc')
+    registered_img.append(ants.apply_transforms(fixed=template, moving=registration_FLAIR2DWI['warpedmovout'],
+                                                interpolator='lanczosWindowedSinc',
+                                                transformlist=registration_DWI['fwdtransforms']))
     new_img_paths.append(img_paths[2].replace('corrected.nii.gz', 'registered.nii.gz'))
-            
+
     # MASK
     registered_img.append(ants.apply_transforms(fixed=template, moving=ants.image_read(img_paths[3]), interpolator='nearestNeighbor',
-                                                    transformlist=registration_DWI['fwdtransforms']))
+                                                transformlist=registration_DWI['fwdtransforms']))
     new_img_paths.append(img_paths[3].replace('brainExtracted.nii.gz', 'registered.nii.gz'))
 
+    # Reorder paths and images to maintain the original order
     new_img_paths[0], new_img_paths[1] = new_img_paths[1], new_img_paths[0]
     registered_img[0], registered_img[1] = registered_img[1], registered_img[0]
 
@@ -185,7 +187,7 @@ def save_images(subject_id, session_id, parameters, save_location, img_paths):
 
 # MAIN
 subject_ids = get_patient_ids(os.path.join(bids_dir_WS, 'participants.tsv'))
-for subject_id in subject_ids:
+for subject_id in subject_ids[30:]:
     if choice_brain_extraction == "Y":
 
         # Perform the brain extraction only for the datasets for which it hasn't been done yet (you can comment this line if you don't want to perform the brain extraction for the dataset)
