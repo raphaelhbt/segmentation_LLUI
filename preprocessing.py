@@ -8,13 +8,13 @@ import ants
 # Paths definitions
 # Path to the ISLES 2022 dataset and the preprocessed directory. Be careful it only works on the workstation !!!
 bids_dir_WS = r"/home/user/Documents/raph/ISLES-2022"
-preprocessed_dir_WS = r"/home/user/Documents/raph/Preprocessed_images"
+preprocessed_dir_WS = r"/home/user/Documents/raph/ISLES_preprocessed_images"
 
 # Path to the template image used for registration
 template_address = r'/home/user/Documents/raph/u_net/template_registration/MNI152_T1_1mm_brain.nii.gz'
 
 # Path to the temporary directory where the preprocessed images will be saved
-temp_save_location = r'/home/user/Documents/raph/temp'
+temp_save_location = r'/home/user/Documents/raph/ISLES_temp'
 
 # Global variables
 session_id = "0001"  # Only 0001 is available for the ISLES 2022 dataset
@@ -185,7 +185,7 @@ def save_images(subject_id, session_id, parameters, save_location, img_paths):
 
 # MAIN
 subject_ids = get_patient_ids(os.path.join(bids_dir_WS, 'participants.tsv'))
-for subject_id in subject_ids[:3]:
+for subject_id in subject_ids:
     if choice_brain_extraction == "Y":
 
         # Perform the brain extraction only for the datasets for which it hasn't been done yet (you can comment this line if you don't want to perform the brain extraction for the dataset)
