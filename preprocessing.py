@@ -2,7 +2,6 @@
 import os
 import pandas as pd
 import ants
-import numpy as np
 
 # On titouan's workstation do source ~/.bash_profile before running the script
 
@@ -187,7 +186,7 @@ def save_images(subject_id, session_id, parameters, save_location, img_paths):
 
 # MAIN
 subject_ids = get_patient_ids(os.path.join(bids_dir_WS, 'participants.tsv'))
-for subject_id in subject_ids[30:]:
+for subject_id in subject_ids:
     if choice_brain_extraction == "Y":
 
         # Perform the brain extraction only for the datasets for which it hasn't been done yet (you can comment this line if you don't want to perform the brain extraction for the dataset)
