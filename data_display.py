@@ -30,9 +30,9 @@ def show_nifti_image_with_slice_selection(image_path):
             print("Invalid input. Please enter a valid integer.")
 
 # Utilisation de la fonction avec le chemin de votre image NIfTI
-#img_before_registration = r"/home/user/Documents/raph/ISLES-2022/sub-strokecase0001/ses-0001/dwi/sub-strokecase0001_ses-0001_dwi.nii.gz"
-#img_after_registration = r"/home/user/Documents/raph/Preprocessed_images/sub-strokecase0001/ses-0001/dwi/sub-strokecase0001_ses-0001_dwi.nii.gz"
-#template_address = r'/home/user/Documents/raph/u_net/u_net/template_registration/MNI152_T1_1mm_brain.nii.gz'
+#img_before_registration = r"/home/user/Documents/raph/raw_datasets/ISLES-2022/sub-strokecase0001/ses-0001/dwi/sub-strokecase0001_ses-0001_dwi.nii.gz"
+#img_after_registration = r"/home/user/Documents/raph/preprocessed_datasets/ISLES2022/sub-strokecase0001/ses-0001/dwi/sub-strokecase0001_ses-0001_dwi.nii.gz"
+#template_address = r'/home/user/Documents/raph/code/template_registration/MNI152_T1_1mm_brain.nii.gz'
 
 #show_nifti_image_with_slice_selection(template_address)
 #show_nifti_image_with_slice_selection(img_before_registration)

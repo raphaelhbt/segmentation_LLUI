@@ -7,14 +7,14 @@ import ants
 
 # Paths definitions
 # Path to the ISLES 2022 dataset and the preprocessed directory. Be careful it only works on the workstation !!!
-bids_dir_WS = r"/home/user/Documents/raph/ISLES-2022"
-preprocessed_dir_WS = r"/home/user/Documents/raph/ISLES_preprocessed_images"
+bids_dir_WS = r"/home/user/Documents/raph/raw_datasets/ISLES-2022"
+preprocessed_dir_WS = r"/home/user/Documents/raph/preprocessed_datasets/ISLES2022"
 
 # Path to the template image used for registration
-template_address = r'/home/user/Documents/raph/u_net/template_registration/MNI152_T1_1mm_brain.nii.gz'
+template_address = r'/home/user/Documents/raph/code/template_registration/MNI152_T1_1mm_brain.nii.gz'
 
 # Path to the temporary directory where the preprocessed images will be saved
-temp_save_location = r'/home/user/Documents/raph/ISLES_temp'
+temp_save_location = r'/home/user/Documents/raph/temporary/ISLES_temp'
 
 # Global variables
 session_id = "0001"  # Only 0001 is available for the ISLES 2022 dataset
