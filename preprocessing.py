@@ -54,24 +54,25 @@ def registration(img_paths, template_address):
 
     # DWI
     registration_DWI = ants.registration(fixed=template, moving=ants.image_read(img_paths[1]), type_of_transform='Rigid', interpolator='lanczosWindowedSinc')
-    registered_img.append(registration_DWI['warpedmovout'])
+    registered_DWI = ants.apply_transforms(fixed=template, moving=ants.image_read(img_paths[1]), transformlist=registration_DWI['fwdtransforms'], interpolator='lanczosWindowedSinc')
+    registered_img.append(registered_DWI)
     new_img_paths.append(img_paths[1].replace('corrected.nii.gz', 'registered.nii.gz'))
 
     # ADC
-    registered_img.append(ants.apply_transforms(fixed=template, moving=ants.image_read(img_paths[0]), interpolator='lanczosWindowedSinc',
-                                                transformlist=registration_DWI['fwdtransforms']))
+    registered_ADC = ants.apply_transforms(fixed=template, moving=ants.image_read(img_paths[0]), transformlist=registration_DWI['fwdtransforms'], interpolator='lanczosWindowedSinc')
+    registered_img.append(registered_ADC)
     new_img_paths.append(img_paths[0].replace('corrected.nii.gz', 'registered.nii.gz'))
 
     # FLAIR (via DWI)
     registration_FLAIR2DWI = ants.registration(fixed=ants.image_read(img_paths[1]), moving=ants.image_read(img_paths[2]), type_of_transform='Rigid', interpolator='lanczosWindowedSinc')
-    registered_img.append(ants.apply_transforms(fixed=template, moving=registration_FLAIR2DWI['warpedmovout'],
-                                                interpolator='lanczosWindowedSinc',
-                                                transformlist=registration_DWI['fwdtransforms']))
+    registered_FLAIR2DWI = registration_FLAIR2DWI['warpedmovout']
+    registered_FLAIR = ants.apply_transforms(fixed=template, moving=registered_FLAIR2DWI, transformlist=registration_DWI['fwdtransforms'], interpolator='lanczosWindowedSinc')
+    registered_img.append(registered_FLAIR)
     new_img_paths.append(img_paths[2].replace('corrected.nii.gz', 'registered.nii.gz'))
 
     # MASK
-    registered_img.append(ants.apply_transforms(fixed=template, moving=ants.image_read(img_paths[3]), interpolator='nearestNeighbor',
-                                                transformlist=registration_DWI['fwdtransforms']))
+    registered_mask = ants.apply_transforms(fixed=template, moving=ants.image_read(img_paths[3]), transformlist=registration_DWI['fwdtransforms'], interpolator='nearestNeighbor')
+    registered_img.append(registered_mask)
     new_img_paths.append(img_paths[3].replace('brainExtracted.nii.gz', 'registered.nii.gz'))
 
     # Reorder paths and images to maintain the original order
@@ -79,9 +80,12 @@ def registration(img_paths, template_address):
     registered_img[0], registered_img[1] = registered_img[1], registered_img[0]
 
     for i in range(len(new_img_paths)):
-        ants.image_write(registered_img[i], new_img_paths[i])  
+        # Ensure that the registered images are resampled to match the template
+        registered_img_resampled = ants.resample_image_to_target(registered_img[i], template, interp_type='lanczosWindowedSinc' if i != 3 else 'nearestNeighbor')
+        ants.image_write(registered_img_resampled, new_img_paths[i])  
 
     return new_img_paths
+
 
 
 def zscore_normalisation(img_paths):

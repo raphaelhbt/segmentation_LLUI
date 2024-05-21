@@ -37,9 +37,9 @@ def move_files(patient_id, source_dirs, target_dir, file_mappings):
         target_dir (str): Target directory for the files.
         file_mappings (list): List of tuples with source and target file suffixes.
     """
-    patient_id_str = f'{int(patient_id):04d}'
+    patient_id_str = f'{int(patient_id):03d}'
     for source_dir, (file_suffix, target_suffix) in zip(source_dirs, file_mappings):
-        source_file = os.path.join(source_dir, f'sub-strokecase{patient_id_str}_ses-0001_{file_suffix}.nii.gz')
+        source_file = os.path.join(source_dir, f'sub-strokecase0{patient_id_str}_ses-0001_{file_suffix}.nii.gz')
         target_file = os.path.join(target_dir, f'ISLES_{patient_id_str}_{target_suffix}.nii.gz')
         shutil.move(source_file, target_file)
 
@@ -64,21 +64,21 @@ def convert_dataset_to_nnUNet(bids_dataset_path, output_path, list_of_patients):
     create_directories(nnunet_base_path, ['imagesTr', 'imagesTs', 'labelsTr', 'labelsTs'])
 
     # Define file mappings
-    file_mappings = [('FLAIR', '000'), ('adc', '001'), ('dwi', '002')]
+    file_mappings = [('FLAIR', '0000'), ('adc', '0001'), ('dwi', '0002')]
 
     # Process training patients
     for patient_id in list_of_patients[:-50]:
         patient_base_dir = os.path.join(nnunet_base_path, f'sub-strokecase{int(patient_id):04d}', 'ses-0001')
         move_files(patient_id, [os.path.join(patient_base_dir, d) for d in ['anat', 'dwi', 'dwi']], image_train_dir, file_mappings)
         shutil.move(os.path.join(nnunet_base_path, 'derivatives', f'sub-strokecase{int(patient_id):04d}', 'ses-0001', f'sub-strokecase{int(patient_id):04d}_ses-0001_msk.nii.gz'),
-                    os.path.join(label_train_dir, f'ISLES_{int(patient_id):04d}.nii.gz'))
+                    os.path.join(label_train_dir, f'ISLES_{int(patient_id):03d}.nii.gz'))
 
     # Process testing patients
     for patient_id in list_of_patients[-50:]:
         patient_base_dir = os.path.join(nnunet_base_path, f'sub-strokecase{int(patient_id):04d}', 'ses-0001')
         move_files(patient_id, [os.path.join(patient_base_dir, d) for d in ['anat', 'dwi', 'dwi']], image_test_dir, file_mappings)
         shutil.move(os.path.join(nnunet_base_path, 'derivatives', f'sub-strokecase{int(patient_id):04d}', 'ses-0001', f'sub-strokecase{int(patient_id):04d}_ses-0001_msk.nii.gz'),
-                    os.path.join(label_test_dir, f'ISLES_{int(patient_id):04d}.nii.gz'))
+                    os.path.join(label_test_dir, f'ISLES_{int(patient_id):03d}.nii.gz'))
 
     # Remove unnecessary folders
     for folder in os.listdir(nnunet_base_path):
