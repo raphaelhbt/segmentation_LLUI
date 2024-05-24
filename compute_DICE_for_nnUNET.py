@@ -1,30 +1,11 @@
 import os
 import ants
 import numpy as np
+import seaborn as sns
+import matplotlib.pyplot as plt
 
-# Fonction pour calculer le score DICE
+# Function to calculate the Dice score
 def dice(im1, im2, empty_score=1.0):
-    """
-    Computes the Dice coefficient, a measure of set similarity.
-    Parameters
-    ----------
-    im1 : array-like, bool
-        Any array of arbitrary size. If not boolean, will be converted.
-    im2 : array-like, bool
-        Any other array of identical size. If not boolean, will be converted.
-    Returns
-    -------
-    dice : float
-        Dice coefficient as a float on range [0,1].
-        Maximum similarity = 1
-        No similarity = 0
-        Both are empty (sum eq to zero) = empty_score
-        
-    Notes
-    -----
-    The order of inputs for `dice` is irrelevant. The result will be
-    identical if `im1` and `im2` are switched.
-    """
     im1 = np.asarray(im1).astype(bool)
     im2 = np.asarray(im2).astype(bool)
 
@@ -40,11 +21,11 @@ def dice(im1, im2, empty_score=1.0):
 
     return 2. * intersection.sum() / im_sum
 
-# Chemin vers les dossiers contenant les images
+# Paths to the directories containing the images
 prediction_dir = "/home/user/Documents/raph/temporary/results_predictions_nnUNet"
 mask_dir = "/home/user/Documents/raph/nnUNet/nnUNet_raw/Dataset011/labelsTs"
 
-# Boucle sur les fichiers ISLES_2xx.nii.gz
+# Loop over the files ISLES_2xx.nii.gz
 dice_scores = []
 for i in range(1, 51):
     file_name = f"ISLES_2{i:02d}.nii.gz"
@@ -53,7 +34,7 @@ for i in range(1, 51):
     if os.path.exists(mask_file_path):
         mask_img = ants.image_read(mask_file_path).numpy()
         
-        # Suppose que la vérité terrain (ground truth) est disponible sous le même format
+        # Suppose that the ground truth is available in the same format
         gt_file_path = os.path.join(prediction_dir, file_name)
         
         if os.path.exists(gt_file_path):
@@ -68,9 +49,19 @@ for i in range(1, 51):
     else:
         print(f"Fichier {file_name} introuvable")
 
-# Calculer et afficher la moyenne du score DICE
+# Calculate and display the average Dice score
 if dice_scores:
     average_dice = sum(dice_scores) / len(dice_scores)
     print(f"Score DICE moyen: {average_dice:.4f}")
 else:
     print("Aucun score DICE calculé")
+
+# Plot the boxplot using seaborn
+if dice_scores:
+    plt.figure(figsize=(10, 6))
+    sns.boxplot(data=dice_scores)
+    plt.title("DICE Boxplot")
+    plt.ylabel("Score DICE")
+    plt.xlabel("Images")
+    plt.show()
+
