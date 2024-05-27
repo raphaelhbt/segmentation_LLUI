@@ -21,6 +21,7 @@ class DoubleConv3D(nn.Module):
 class UNet3D(nn.Module):
 
     def __init__(self, in_channels, out_channels):
+        super(UNet3D, self).__init__()
         self.encoder1 = DoubleConv3D(in_channels, 64)
         self.pool1 = nn.MaxPool3d(kernel_size=2, stride=2)
         self.encoder2 = DoubleConv3D(64, 128)
@@ -31,7 +32,7 @@ class UNet3D(nn.Module):
         self.pool4 = nn.MaxPool3d(kernel_size=2, stride=2)
         self.encoder5 = DoubleConv3D(512, 1024)
 
-        self.upconv4 = nn.ConvTranspose3d(1024, 512, kernel_size=2, stride=2) # it upsamples the widht and height because of the stride and kernel size (2x2x2) but reduces the depth (1024->512) because of the number of output channels
+        self.upconv4 = nn.ConvTranspose3d(1024, 512, kernel_size=2, stride=2)
         self.decoder4 = DoubleConv3D(1024, 512)
         self.upconv3 = nn.ConvTranspose3d(512, 256, kernel_size=2, stride=2)
         self.decoder3 = DoubleConv3D(512, 256)
@@ -66,7 +67,3 @@ class UNet3D(nn.Module):
         dec1 = self.decoder1(dec1)
 
         return self.out(dec1)
-    
-# U-Net architecture extracted from :
-# A. Tursynova and B. Omarov, "3D U-Net for brain stroke lesion segmentation on ISLES 2018 dataset," 
-# 2021 16th International Conference on Electronics Computer and Computation (ICECCO), Kaskelen, Kazakhstan, 2021, pp. 1-4, doi: 10.1109/ICECCO53203.2021.9663825.

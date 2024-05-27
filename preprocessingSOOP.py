@@ -2,6 +2,7 @@
 import os
 import pandas as pd
 import ants
+import subprocess
 
 # On titouan's workstation do source ~/.bash_profile before running the script
 
@@ -32,8 +33,14 @@ def brain_extraction(bids_dir, parameters, temp_save_location, subject_id):
 
     # Perform the brain extraction
     for i in range(1, len(img_paths)-1): # -1 because we don't want to perform brain extraction on the mask and one because no need for ADC
-        os.system("bet " + img_paths[i] + " " + out_paths[i] + " -R")
+        if parameters[i] == 'TRACE':
+            os.system("bet " + img_paths[i] + " " + out_paths[i] + " -R -m")
+        else:
+            os.system("bet " + img_paths[i] + " " + out_paths[i] + " -R")
 
+    if parameters == 'ADC':
+        command= ["fslmaths", "img_paths[0]", "-mul", f"{subject_id}_ses-0001_TRACE_brainExtracted_mask.nii.gz" "out_paths[0]"]
+        subprocess.run(command)
     return out_paths
 
 def bias_field_correction(img_paths):
@@ -202,6 +209,10 @@ for subject_id in subject_ids:
 
     if not os.path.exists(os.path.join(bids_dir_WS, subject_id)) or not os.path.exists(os.path.join(bids_dir_WS,'derivatives','lesion_masks', subject_id)):
         print(f"Skipping subject {subject_id}: Folders do not exist at both addresses.")
+        continue
+
+    if not os.path.exists(os.path.join(address2, "dwi", f"{subject_id}_space-TRACE_desc-lesion_mask.nii.gz")):
+        print(f"Skipping subject {subject_id}: Mask file not found.")
         continue
 
     if choice_brain_extraction == "Y":
