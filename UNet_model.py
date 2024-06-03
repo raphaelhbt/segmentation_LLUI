@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from torchviz import make_dot
+from torch.utils.tensorboard import SummaryWriter
 
 class ConvBlock(nn.Module):
     def __init__(self, in_channels, out_channels):
@@ -27,10 +28,8 @@ class DownBlock(nn.Module):
 
     def forward(self, x):
         x = self.conv(x)
-        print('conv1', x.shape)
         skip = x
         x = self.down(x)
-        print('down', x.shape)
         return skip, x
 
 class UpBlock(nn.Module):
@@ -42,20 +41,16 @@ class UpBlock(nn.Module):
 
     def forward(self, x, skip):
         x = self.up(x)
-        print('up', x.shape)
         x = torch.cat((x, skip), dim=1)
-        print('concat', x.shape)
         x = self.conv(x)
-        print('conv1', x.shape)
         x = self.conv2(x)
-        print('conv2', x.shape)
         return x
 
 class UNet3D(nn.Module):
-    def __init__(self):
+    def __init__(self, in_channels, out_channels):
         super(UNet3D, self).__init__()
         
-        self.first_conv = nn.Conv3d(1, 32, kernel_size=3, stride=1, padding=1)
+        self.first_conv = nn.Conv3d(in_channels, 32, kernel_size=3, stride=1, padding=1)
 
         self.enc1 = DownBlock(32, 64)
         self.enc2 = DownBlock(64, 128)
@@ -71,12 +66,11 @@ class UNet3D(nn.Module):
         self.up2 = UpBlock(128, 64)
         self.up1 = UpBlock(64, 32)
         
-        self.final_conv = nn.Conv3d(32, 1, kernel_size=1, stride=1)
+        self.final_conv = nn.Conv3d(32, out_channels, kernel_size=1, stride=1)
     
     def forward(self, x):
         # Initial Convolution
         x = self.first_conv(x)
-        print('conv0', x.shape)
         # Encoder
         skip1, x = self.enc1(x)
         skip2, x = self.enc2(x)
@@ -96,19 +90,17 @@ class UNet3D(nn.Module):
         
         # Final Convolution
         x = self.final_conv(x)
-        
         return x
 
-# Instantiate the model
-model = UNet3D()
-
-# Create a dummy input tensor
-input_tensor = torch.randn(1, 1, 128, 128, 128)
-
-# Get the model output to generate the computation graph
-output = model(input_tensor)
-
-# Visualize the model
-dot = make_dot(output, params=dict(list(model.named_parameters()) + [('input', input_tensor)]))
-dot.format = 'png'
-dot.render('unet3d_model')
+# Création du modèle
+#net = UNet3D(in_channels=1, out_channels=2)
+ 
+# Création d'un writer pour TensorBoard
+#writer = SummaryWriter('runs/unet3d_experiment_1')
+ 
+# Création d'un tenseur de données d'entrée factice
+#images = torch.randn(1, 1, 128, 128, 128)
+ 
+# Ajout du modèle au writer de TensorBoard
+#writer.add_graph(net, images)
+#writer.close()

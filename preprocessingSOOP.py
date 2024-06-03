@@ -24,7 +24,7 @@ def brain_extraction(bids_dir, parameters, temp_save_location, subject_id):
     if len(out_paths) != len(parameters):
         raise ValueError(f"Error creating output paths for subject {subject_id}")
 
-    for i in range(1, len(img_paths) - 1):
+    for i in range(1, len(img_paths)-1): 
         if parameters[i] == 'TRACE':
             os.system("bet " + img_paths[i] + " " + out_paths[i] + " -R -m")
         else:
@@ -39,11 +39,11 @@ def brain_extraction(bids_dir, parameters, temp_save_location, subject_id):
             raise FileNotFoundError(f"Mask file not found: {mask_path}")
     return out_paths
 
-def bias_field_correction(img_paths):
+def bias_field_correction(img_paths, template_address):
     corrected_paths = []
-    for i in range(len(img_paths) - 1):
-        if i == 3:
-            corrected_paths.append(process_in_chunks(new_img_path, 50))
+    for i in range(len(img_paths)-1): 
+        if i == 2 or i == 3:
+            corrected_paths.append(downsample_image(img_paths[i], template_address))
         else:
             new_img_path = img_paths[i].replace('brainExtracted.nii.gz', 'corrected.nii.gz')
             img = ants.image_read(img_paths[i])
@@ -51,7 +51,6 @@ def bias_field_correction(img_paths):
             ants.image_write(img_corrected, new_img_path)
             corrected_paths.append(new_img_path)
     corrected_paths.append(img_paths[-1])
-    print("length corrected paths", len(corrected_paths))
     return corrected_paths
 
 
@@ -93,11 +92,14 @@ def registration(img_paths, template_address):
     ants.image_write(registered_img_resampled, new_img_path)
     registered_paths.append(new_img_path)
 
+    # Reorder paths and images to maintain the original order
+    registered_paths[0], registered_paths[1] = registered_paths[1], registered_paths[0]
+
     return registered_paths
 
 def zscore_normalisation(img_paths):
     normalized_paths = []
-    for img_path in img_paths[:-1]:
+    for img_path in img_paths[:-1]: 
         new_path = img_path.replace('registered.nii.gz', 'zscore.nii.gz')
         img = ants.image_read(img_path)
         img_np = img.numpy()
@@ -139,41 +141,36 @@ def retrieve_out_paths(img_paths, temp_save_location, subject_id, parameters):
     os.makedirs(temp_save_location, exist_ok=True)
 
     for i in range(len(img_paths)):
-        out_path = os.path.join(temp_save_location, f"{subject_id}_ses-0001_{parameters[i]}_brainExtracted.nii.gz")
+        if i == 1:
+            out_path = os.path.join(temp_save_location, f"{subject_id}_ses-0001_dwi_brainExtracted.nii.gz")
+        else:
+            out_path = os.path.join(temp_save_location, f"{subject_id}_ses-0001_{parameters[i]}_brainExtracted.nii.gz")
         ants.image_write(ants.image_read(img_paths[i]), out_path)
         out_paths.append(out_path)
     return out_paths
 
 def save_images(subject_id, parameters, save_location, img_paths):
     for i in range(len(img_paths)):
-        if 'TRACE' in img_paths[i] or 'ADC' in img_paths[i]:
+        if 'ADC' in parameters[i]:
             save_path = os.path.join(save_location, f"{subject_id}", "ses-0001", "dwi", f"{subject_id}_ses-0001_{parameters[i]}.nii.gz")
-        elif 'FLAIR' in img_paths[i] or 'T1w' in img_paths[i]:
+        elif 'TRACE' in parameters[i]:
+            save_path = os.path.join(save_location, f"{subject_id}", "ses-0001", "dwi", f"{subject_id}_ses-0001_dwi.nii.gz")
+        elif 'FLAIR' in parameters[i] or 'T1w' in parameters[i]:
             save_path = os.path.join(save_location, f"{subject_id}", "ses-0001", "anat", f"{subject_id}_ses-0001_{parameters[i]}.nii.gz")
+        elif 'mask' in parameters[i]:
+            save_path = os.path.join(save_location, "derivatives", "lesion_masks", f"{subject_id}", "ses-0001", f"{subject_id}_ses-0001_msk.nii.gz")
         else:
             continue
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         ants.image_write(ants.image_read(img_paths[i]), save_path)
 
-def process_chunk(chunk, img):
-    chunk_img = ants.from_numpy(chunk, spacing=img.spacing, origin=img.origin, direction=img.direction)
-    chunk_corrected = ants.n4_bias_field_correction(chunk_img)
-    return chunk_corrected.numpy()
-
-def process_in_chunks(image_path, chunk_size):
+def downsample_image(image_path, template_path):
+    new_img_path = []
+    new_img_path = image_path.replace('brainExtracted.nii.gz', 'corrected.nii.gz')
     img = ants.image_read(image_path)
-    img_np = img.numpy()
-    processed_chunks = []
-    for i in range(0, img_np.shape[2], chunk_size):
-        chunk = img_np[:, :, i:i+chunk_size]
-        # Perform your processing on the chunk here (e.g., bias field correction, registration)
-        processed_chunk = process_chunk(chunk, img)
-        processed_chunks.append(processed_chunk)
-    processed_img_np = np.concatenate(processed_chunks, axis=2)
-    processed_img = ants.from_numpy(processed_img_np, spacing=img.spacing, origin=img.origin, direction=img.direction)
-    processed_path = image_path.replace('brainExtracted.nii.gz', 'corrected.nii.gz')
-    ants.image_write(processed_img, processed_path)
-    return processed_path
+    downsampled_img = ants.resample_image_to_target(img, ants.image_read(template_path), interp_type='lanczosWindowedSinc')
+    ants.image_write(downsampled_img, new_img_path)
+    return new_img_path
 
 # MAIN
 subject_ids = get_patient_ids(os.path.join(bids_dir_WS, 'participants.tsv'))
@@ -204,7 +201,7 @@ for subject_id in subject_ids:
             temp_img_paths = retrieve_out_paths(temp_img_paths, temp_save_location, subject_id, parameters)
             print('Brain extraction done')
 
-        temp_img_paths = list(bias_field_correction(temp_img_paths))
+        temp_img_paths = list(bias_field_correction(temp_img_paths, template_address))
         if len(temp_img_paths) != len(parameters):
             raise ValueError(f"Bias field correction did not return the expected number of paths for subject {subject_id}")
         print('Bias field correction done')
@@ -215,13 +212,19 @@ for subject_id in subject_ids:
         print('Registration done')
 
         temp_img_paths = list(zscore_normalisation(temp_img_paths))
-        if len(temp_img_paths) != len(parameters) - 1:
+        if len(temp_img_paths) != len(parameters) : #-1
             raise ValueError(f"Z-score normalization did not return the expected number of paths for subject {subject_id}")
         print('Intensity normalization done')
 
         save_images(subject_id, parameters, preprocessed_dir_WS, temp_img_paths)
         print(f"Subject {subject_id} preprocessed successfully.")
 
+        for filename in os.listdir(os.path.join(preprocessed_dir_WS, f"{subject_id}", "ses-0001", "dwi")):
+            # Check if 'TRACE' is in the filename
+            if 'TRACE' in filename:
+                # Construct the full path to the file
+                file_path = os.path.join(os.path.join(preprocessed_dir_WS, f"{subject_id}", "ses-0001", "dwi"), f"{subject_id}_ses-0001_TRACE.nii.gz")
+                os.remove(file_path)
     except Exception as e:
         print(f"Error processing subject {subject_id}: {e}")
     

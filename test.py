@@ -1,15 +1,18 @@
-import ants
+import os
 
-temp_save_location = r'/home/user/Documents/raph/ISLES_temp/sub-strokecase0001_ses-0001_adc_registered.nii.gz'
+preprocessed_dir_WS = r"/home/user/Documents/raph/preprocessed_datasets/ISLES2022"
 
-path= r'/home/user/Documents/raph/ISLES_temp/sub-strokecase0032_ses-0001_adc_zscore.nii.gz'
-path2= r'/home/user/Documents/raph/ISLES_temp/sub-strokecase0032_ses-0001_dwi_zscore.nii.gz'
-path3= r'/home/user/Documents/raph/ISLES_temp/sub-strokecase0032_ses-0001_FLAIR_zscore.nii.gz'
+def rename_adc_files(base_path):
+    # Walk through all directories and files in the base_path
+    for dirpath, dirnames, filenames in os.walk(base_path):
+        # Rename files containing 'adc'
+        for filename in filenames:
+            if 'adc' in filename:
+                new_filename = filename.replace('adc', 'ADC')
+                old_file = os.path.join(dirpath, filename)
+                new_file = os.path.join(dirpath, new_filename)
+                os.rename(old_file, new_file)
 
-paths = [path, path2, path3]
-
-for i in range(len(paths)):
-    img = ants.image_read(paths[i]).numpy()
-    print('mean', img.mean())
-    print('std', img.std())
+# Example usage
+rename_adc_files(preprocessed_dir_WS)
 
