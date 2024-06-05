@@ -1,18 +1,35 @@
+import pandas as pd
 import os
 
-preprocessed_dir_WS = r"/home/user/Documents/raph/preprocessed_datasets/ISLES2022"
+def get_patient_ids2(file_path, preprocessed_path):
+    """
+    Get patient IDs from a TSV file.
 
-def rename_adc_files(base_path):
-    # Walk through all directories and files in the base_path
-    for dirpath, dirnames, filenames in os.walk(base_path):
-        # Rename files containing 'adc'
-        for filename in filenames:
-            if 'adc' in filename:
-                new_filename = filename.replace('adc', 'ADC')
-                old_file = os.path.join(dirpath, filename)
-                new_file = os.path.join(dirpath, new_filename)
-                os.rename(old_file, new_file)
+    Parameters:
+        file_path (str): The path to the TSV file containing patient IDs.
 
-# Example usage
-rename_adc_files(preprocessed_dir_WS)
+    Returns:
+        list: A list of patient ID suffixes.
+    """
+    df = pd.read_csv(file_path, sep='\t')
+    list_of_patients = df['participant_id'].tolist()
+    j=0
+    for i in list_of_patients:
+        print(i)
+        if not os.path.exists(os.path.join(preprocessed_path, i)):
+            list_of_patients.pop(j)
+            print('popped', i)
+        list_of_patients[j] = list_of_patients[j].replace('sub-', "")
+        j+=1
+        print(f'{int(list_of_patients[j-1]):04d}')
+    return list_of_patients
+
+
+bids_dataset_path = "/home/user/Documents/raph/raw_datasets/SOOP"
+preprocessed_path = "/home/user/Documents/raph/preprocessed_datasets/SOOP"
+
+print(len(get_patient_ids2(os.path.join(bids_dataset_path, 'ds004889', "participants.tsv"), preprocessed_path)))
+
+
+    
 

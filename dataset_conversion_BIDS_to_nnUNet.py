@@ -14,7 +14,10 @@ def get_patient_ids(file_path):
         list: A list of patient ID suffixes.
     """
     df = pd.read_csv(file_path, sep='\t')
-    return df['participant_id'].str[-3:].tolist()
+    list_of_patients = df['participant_id'].tolist()
+    for i in range(len(list_of_patients)):
+        list_of_patients[i] = list_of_patients[i].replace('sub-', "")
+    return list_of_patients
 
 def create_directories(base_path, subdirectories):
     """
@@ -52,7 +55,7 @@ def convert_dataset_to_nnUNet(bids_dataset_path, output_path, list_of_patients):
         output_path (str): Path to the output directory.
         list_of_patients (list): List of patient IDs.
     """
-    dataset_name = 'Dataset011'
+    dataset_name = 'Dataset012'
     nnunet_base_path = os.path.join(output_path, dataset_name)
     image_train_dir = os.path.join(nnunet_base_path, 'imagesTr')
     image_test_dir = os.path.join(nnunet_base_path, 'imagesTs')
@@ -64,21 +67,21 @@ def convert_dataset_to_nnUNet(bids_dataset_path, output_path, list_of_patients):
     create_directories(nnunet_base_path, ['imagesTr', 'imagesTs', 'labelsTr', 'labelsTs'])
 
     # Define file mappings
-    file_mappings = [('FLAIR', '0000'), ('adc', '0001'), ('dwi', '0002')]
+    file_mappings = [('FLAIR', '0000'), ('T1w','0001'), ('ADC', '0002'), ('dwi', '0003')]
 
     # Process training patients
-    for patient_id in list_of_patients[:-50]:
+    for patient_id in list_of_patients[:-254]:
         patient_base_dir = os.path.join(nnunet_base_path, f'sub-strokecase{int(patient_id):04d}', 'ses-0001')
-        move_files(patient_id, [os.path.join(patient_base_dir, d) for d in ['anat', 'dwi', 'dwi']], image_train_dir, file_mappings)
-        shutil.move(os.path.join(nnunet_base_path, 'derivatives', f'sub-strokecase{int(patient_id):04d}', 'ses-0001', f'sub-strokecase{int(patient_id):04d}_ses-0001_msk.nii.gz'),
-                    os.path.join(label_train_dir, f'ISLES_{int(patient_id):03d}.nii.gz'))
+        move_files(patient_id, [os.path.join(patient_base_dir, d) for d in ['anat', 'anat', 'dwi', 'dwi']], image_train_dir, file_mappings)
+        shutil.move(os.path.join(nnunet_base_path, 'derivatives', f'sub-{int(patient_id):04d}', 'ses-0001', f'sub-{(patient_id):04d}_ses-0001_msk.nii.gz'),
+                    os.path.join(label_train_dir, f'SOOP_{int(patient_id):03d}.nii.gz'))
 
     # Process testing patients
-    for patient_id in list_of_patients[-50:]:
+    for patient_id in list_of_patients[-254:]:
         patient_base_dir = os.path.join(nnunet_base_path, f'sub-strokecase{int(patient_id):04d}', 'ses-0001')
-        move_files(patient_id, [os.path.join(patient_base_dir, d) for d in ['anat', 'dwi', 'dwi']], image_test_dir, file_mappings)
-        shutil.move(os.path.join(nnunet_base_path, 'derivatives', f'sub-strokecase{int(patient_id):04d}', 'ses-0001', f'sub-strokecase{int(patient_id):04d}_ses-0001_msk.nii.gz'),
-                    os.path.join(label_test_dir, f'ISLES_{int(patient_id):03d}.nii.gz'))
+        move_files(patient_id, [os.path.join(patient_base_dir, d) for d in ['anat', 'anat', 'dwi', 'dwi']], image_test_dir, file_mappings)
+        shutil.move(os.path.join(nnunet_base_path, 'derivatives', f'sub-{int(patient_id):04d}', 'ses-0001', f'sub-{int(patient_id):04d}_ses-0001_msk.nii.gz'),
+                    os.path.join(label_test_dir, f'SOOP_{int(patient_id):03d}.nii.gz'))
 
     # Remove unnecessary folders
     for folder in os.listdir(nnunet_base_path):
@@ -95,9 +98,9 @@ def create_dataset_json(output_path):
         output_path (str): Path to the output directory.
     """
     dataset = {
-        "channel_names": { "0": "FLAIR", "1": "ADC", "2": "DWI" },
+        "channel_names": { "0": "FLAIR", "1": "T1w", "2": "ADC", "3": "DWI" },
         "labels": { "background": 0, "SL": 1 },
-        "numTraining": 200,
+        "numTraining": 1016,
         "file_ending": ".nii.gz",
         "overwrite_image_reader_writer": "SimpleITKIO"
     }
@@ -105,13 +108,13 @@ def create_dataset_json(output_path):
         json.dump(dataset, f, indent=4)
 
 # Define paths
-bids_preprocessed_dataset_path = "/home/user/Documents/raph/preprocessed_datasets/ISLES2022"
+bids_preprocessed_dataset_path = "/home/user/Documents/raph/preprocessed_datasets/SOOP"
 output_path = "/home/user/Documents/raph/nnUNet/nnUNet_raw"
-bids_dataset_path = "/home/user/Documents/raph/raw_datasets/ISLES-2022"
+bids_dataset_path = "/home/user/Documents/raph/raw_datasets/SOOP"
 
 # Get patient IDs and convert dataset
-list_of_patients = get_patient_ids(os.path.join(bids_dataset_path, 'participants.tsv'))
+list_of_patients = get_patient_ids(os.path.join(bids_dataset_path,'ds004889', 'participants.tsv'))
 convert_dataset_to_nnUNet(bids_preprocessed_dataset_path, output_path, list_of_patients)
 
 # Create the dataset.json file
-create_dataset_json(os.path.join(output_path, 'Dataset011'))
+create_dataset_json(os.path.join(output_path, 'Dataset012'))

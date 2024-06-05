@@ -49,10 +49,10 @@ for i in range(1, 51):
     else:
         print(f"Fichier {file_name} introuvable")
 
-# Calculate and display the average Dice score
+# Calculate and display the median Dice score
 if dice_scores:
-    average_dice = sum(dice_scores) / len(dice_scores)
-    print(f"Score DICE moyen: {average_dice:.4f}")
+    median_dice = np.median(dice_scores)
+    print(f"Score DICE médian: {median_dice:.4f}")
 else:
     print("Aucun score DICE calculé")
 
