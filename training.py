@@ -2,24 +2,26 @@ import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, Dataset, random_split
+from torch.utils.data import DataLoader, Dataset
 import ants
 import numpy as np
 import UNet_model as unet
-import matplotlib.pyplot as plt
-import random
 from scipy.ndimage import gaussian_filter, zoom
-from skimage.transform import rotate,resize
-import torch.nn.functional as F
+from skimage.transform import rotate, resize
 from torchvision import transforms
+import random
+from torch.utils.data import random_split
+from torch.utils.tensorboard import SummaryWriter  
+import shutil
 
 # Set seed for reproducibility
 torch.manual_seed(0)
 torch.cuda.manual_seed_all(0)
+random.seed(0)  # Set seed for random module
 
 # Set parameters
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-model = unet.UNet3D(in_channels=3, out_channels=4).to(DEVICE)  # Adjust in_channels for 3 input modalities
+model = unet.UNet3D(in_channels=3, out_channels=2).to(DEVICE)  # Adjust in_channels for 3 input modalities
 
 NUM_EPOCHS = 10
 LEARNING_RATE = 1e-3
@@ -28,34 +30,48 @@ PATCH_SIZE = [128, 128, 128]
 criterion = nn.CrossEntropyLoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
+# Initialize TensorBoard writer
+log_dir = 'runs/UNet3D_experiment_1'
+writer = SummaryWriter(log_dir)
+
+
 class RandomRotateScale:
-    def __init__(self, patch_size, prob=0.2):
+    def __init__(self, patch_size, rotate_prob=0.16, scale_prob=0.16, both_prob=0.08):
         self.patch_size = patch_size
-        self.prob = prob
+        self.rotate_prob = rotate_prob
+        self.scale_prob = scale_prob
+        self.both_prob = both_prob
 
     def __call__(self, sample):
         new_sample = []
-        if random.random() < self.prob:
+        do_rotate = random.random() < self.rotate_prob
+        do_scale = random.random() < self.scale_prob
+        do_both = random.random() < self.both_prob
+
+        if do_rotate or do_both:
             angle_x = random.uniform(-30, 30)
             angle_y = random.uniform(-30, 30)
             angle_z = random.uniform(-30, 30)
-            scale = random.uniform(0.7, 1.4)
 
             for i in range(len(sample)):
                 rotated_img = rotate(sample[i], angle_x, resize=False, preserve_range=True)
                 rotated_img = rotate(rotated_img, angle_y, resize=False, preserve_range=True)
                 rotated_img = rotate(rotated_img, angle_z, resize=False, preserve_range=True)
+                new_sample.append(rotated_img)
 
+        if do_scale or do_both:
+            scale = random.uniform(0.7, 1.4)
+
+            for i in range(len(new_sample)):
                 # Zoom and Resize to match patch size
-                resized_img = resize(zoom(rotated_img, scale), self.patch_size, anti_aliasing=True)
+                resized_img = resize(zoom(new_sample[i], scale), self.patch_size, anti_aliasing=True)
+                new_sample[i] = resized_img
 
-                new_sample.append(resized_img)
+        # Convert list of arrays to a single numpy array
+        new_sample = np.array(new_sample)
 
-            # Convert list of arrays to a single numpy array
-            new_sample = np.array(new_sample)
-
-            return new_sample
-        return sample  # If no transformation is applied, return the original sample
+        return new_sample if new_sample.size > 0 else sample  # If no transformation is applied, return the original sample
+    
 class RandomGaussianNoise:
     def __init__(self, prob=0.15):
         self.prob = prob
@@ -68,15 +84,22 @@ class RandomGaussianNoise:
         return sample
 
 class RandomGaussianBlur:
-    def __init__(self, prob=0.2):
-        self.prob = prob
+    def __init__(self, sample_prob = 0.2, modality_prob = 0.5):
+        self.sample_prob = sample_prob
+        self.modality_prob = modality_prob
 
     def __call__(self, sample):
-        if random.random() < self.prob:
+        do_blur = random.random() < self.sample_prob
+
+        if do_blur:
             sigma = random.uniform(0.5, 1.5)
             sample = gaussian_filter(sample, sigma)
-        return sample
+            for i in range(len(sample)):
+                if random.random() < self.modality_prob:
+                    sigma = random.uniform(0.5, 1.5)
+                    sample[i] = gaussian_filter(sample[i], sigma)
 
+        return sample
 class RandomBrightness:
     def __init__(self, prob=0.15):
         self.prob = prob
@@ -92,27 +115,26 @@ class RandomContrast:
         self.prob = prob
 
     def __call__(self, sample):
+        new_sample = sample
         if random.random() < self.prob:
             factor = random.uniform(0.65, 1.5)
-            sample = sample * factor
-            sample = np.clip(sample, 0, 1)
-        return sample
+            new_sample = sample * factor
+            new_sample = np.clip(new_sample, sample.min(), sample.max())
+        return new_sample
+
 
 class RandomLowResolution:
-    def __init__(self, prob=0.25):
-        self.prob = prob
+    def __init__(self, sample_prob=0.25, modality_prob=0.5):
+        self.sample_prob = sample_prob
+        self.modality_prob = modality_prob
 
     def __call__(self, sample):
-        if random.random() < self.prob:
+        if random.random() < self.sample_prob:
             factor = random.uniform(1, 2)
-
-            # Downsample by factor
             downsampled = zoom(sample, 1 / factor, order=0)
-
-            # Upsample back to the original size
             upsampled = resize(downsampled, sample.shape, order=3, mode='reflect', anti_aliasing=True)
+            sample = upsampled
 
-            return upsampled
         return sample
 
 class RandomGamma:
@@ -121,27 +143,35 @@ class RandomGamma:
 
     def __call__(self, sample):
         if random.random() < self.prob:
-            gamma = random.uniform(0.7, 1.5)
-            # Ensure all values are positive and normalized to avoid issues with power operation
-            sample = np.clip(sample, 0, None)  # Clip to non-negative values
-            sample = sample + 1e-6  # Adding a small constant to avoid zero
-            sample = sample ** gamma
+            # Scale intensities to [0, 1]
+            min_val, max_val = np.min(sample), np.max(sample)
+            sample = (sample - min_val) / (max_val - min_val)
+
+            # Apply nonlinear intensity transformation
+            g = random.uniform(0.7, 1.5)
+            if random.random() < self.prob:
+                # Invert intensities prior to transformation
+                sample = 1 - ((1 - sample) ** g)
+            else:
+                sample = sample ** g
+
+            # Scale intensities back to original range
+            sample = (sample * (max_val - min_val)) + min_val
+
         return sample
 
 class RandomMirror:
-    def __init__(self, prob=0.5):
-        self.prob = prob
+    def __init__(self):
+        self.prob = 0.5
 
     def __call__(self, sample):
         if random.random() < self.prob:
             axes = [0, 1, 2]  # Define the possible axes to flip
-            random.shuffle(axes)  # Shuffle to decide randomly which axis to flip
-
             for axis in axes:
-                if random.random() < 0.5:  # 50% chance to flip along each axis
+                if random.random() < self.prob:  # 50% chance to flip along each axis
                     sample = np.flip(sample, axis=axis).copy()  # Ensure to create a copy after flipping
 
-        return sample
+        return sample 
     
 # BIDS Dataset Loader
 class BidsDataset(Dataset):
@@ -170,11 +200,20 @@ class BidsDataset(Dataset):
         dwi_path = os.path.join(self.bids_dir, subject, "ses-0001", "dwi", f"{subject}_ses-0001_dwi.nii.gz")
         mask_path = os.path.join(self.bids_dir, "derivatives", subject, "ses-0001", f"{subject}_ses-0001_msk.nii.gz")
 
+        # Check if files exist
+        if not all(os.path.exists(path) for path in [FLAIR_path, adc_path, dwi_path, mask_path]):
+            raise FileNotFoundError("One or more files do not exist")
+
         # Load images
         FLAIR_img = ants.image_read(FLAIR_path).numpy()
         adc_img = ants.image_read(adc_path).numpy()
         dwi_img = ants.image_read(dwi_path).numpy()
         mask_img = ants.image_read(mask_path).numpy()
+
+        # Normalize images
+        FLAIR_img = (FLAIR_img - FLAIR_img.min()) / (FLAIR_img.max() - FLAIR_img.min())
+        adc_img = (adc_img - adc_img.min()) / (adc_img.max() - adc_img.min())
+        dwi_img = (dwi_img - dwi_img.min()) / (dwi_img.max() - dwi_img.min())
 
         # Extract patches
         FLAIR_patches, adc_patches, dwi_patches, mask_patches = self.extract_patches(FLAIR_img, adc_img, dwi_img, mask_img)
@@ -197,9 +236,9 @@ class BidsDataset(Dataset):
     def extract_patches(self, FLAIR, adc, dwi, mask):
         FLAIR_patches, adc_patches, dwi_patches, mask_patches = [], [], [], []
 
-        for i in range(0, FLAIR.shape[0], self.patch_size[0]):
-            for j in range(0, FLAIR.shape[1], self.patch_size[1]):
-                for k in range(0, FLAIR.shape[2], self.patch_size[2]):
+        for i in range(0, FLAIR.shape[0] - self.patch_size[0] + 1, self.patch_size[0]):
+            for j in range(0, FLAIR.shape[1] - self.patch_size[1] + 1, self.patch_size[1]):
+                for k in range(0, FLAIR.shape[2] - self.patch_size[2] + 1, self.patch_size[2]):
                     FLAIR_patch = FLAIR[i:i+self.patch_size[0], j:j+self.patch_size[1], k:k+self.patch_size[2]]
                     adc_patch = adc[i:i+self.patch_size[0], j:j+self.patch_size[1], k:k+self.patch_size[2]]
                     dwi_patch = dwi[i:i+self.patch_size[0], j:j+self.patch_size[1], k:k+self.patch_size[2]]
@@ -210,6 +249,7 @@ class BidsDataset(Dataset):
                         adc_patches.append(adc_patch)
                         dwi_patches.append(dwi_patch)
                         mask_patches.append(mask_patch)
+                        #print('i:', i, 'j:', j, 'k:', k)
 
         return np.array(FLAIR_patches), np.array(adc_patches), np.array(dwi_patches), np.array(mask_patches)
 
@@ -252,6 +292,10 @@ for epoch in range(NUM_EPOCHS):
             scores = model(data)
             loss = criterion(scores, targets)
         
+        # Print the shapes to debug
+        if batch_idx == 0:  # Only print for the first batch to reduce clutter
+            print(f"Batch {batch_idx} - data shape: {data.shape}, scores shape: {scores.shape}, targets shape: {targets.shape}")
+        
         epoch_loss += loss.item()
 
         # Backward pass with mixed precision
@@ -263,10 +307,15 @@ for epoch in range(NUM_EPOCHS):
         if batch_idx % 10 == 0:  # Print every 10 batches
             print(f"Epoch [{epoch+1}/{NUM_EPOCHS}], Batch [{batch_idx+1}/{len(train_loader)}], Loss: {loss.item():.4f}")
 
-    print(f"Epoch [{epoch+1}/{NUM_EPOCHS}] Loss: {epoch_loss/len(train_loader):.4f}")
 
-    # Save the model checkpoint
-    torch.save(model.state_dict(), f"unet_epoch_{epoch+1}.pth")
+        # Log training loss to TensorBoard
+        if epoch > 0:
+            avg_epoch_loss = epoch_loss / len(train_loader)
+
+            writer.add_scalar('Loss/train', avg_epoch_loss, epoch)
+
+        # Save the model checkpoint
+        torch.save(model.state_dict(), f"unet_epoch_{epoch+1}.pth")
 
     # Evaluate the model
     model.eval()
@@ -282,7 +331,14 @@ for epoch in range(NUM_EPOCHS):
             
             val_loss += loss.item()
     
-    print(f"Validation Loss after epoch {epoch+1}: {val_loss/len(val_loader):.4f}")
+    avg_val_loss = val_loss / len(val_loader)
+    print(f"Validation Loss after epoch {epoch+1}: {avg_val_loss:.4f}")
 
-print("Training complete!") 
+    # Log validation loss to TensorBoard
+    writer.add_scalar('Loss/val', avg_val_loss, epoch)
+
+# Close the TensorBoard writer
+writer.close()
+
+print("Training complete!")
 
