@@ -32,8 +32,9 @@ NUM_EPOCHS = 10
 LEARNING_RATE = 1e-3
 BATCH_SIZE = 2
 PATCH_SIZE = [2, 2, 128, 128, 128]
-criterion = nn.CrossEntropyLoss()
+criterion = nn.BCELoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
+threshold = 0.5
 
 # Initialize TensorBoard writer
 log_dir = 'runs/UNet3D_experiment_1'
@@ -221,7 +222,6 @@ class BidsDataset(Dataset):
 
     def __getitem__(self, idx):
         subject = self.subjects[idx]
-        
         FLAIR_path = os.path.join(self.bids_dir, subject, "ses-0001", "anat", f"{subject}_ses-0001_FLAIR.nii.gz")
         adc_path = os.path.join(self.bids_dir, subject, "ses-0001", "dwi", f"{subject}_ses-0001_ADC.nii.gz")
         dwi_path = os.path.join(self.bids_dir, subject, "ses-0001", "dwi", f"{subject}_ses-0001_dwi.nii.gz")
@@ -247,10 +247,9 @@ class BidsDataset(Dataset):
             data = [FLAIR_img, adc_img, dwi_img, mask_img]
             data = self.transform(data)
             FLAIR_img, adc_img, dwi_img, mask_img = data
-
+        
         # Extract patches
         FLAIR_patches, adc_patches, dwi_patches, mask_patches, coord_patch_list = self.extract_patches(FLAIR_img, adc_img, dwi_img, mask_img)
-
         # Return the patches as torch tensors
         return (
             torch.tensor(FLAIR_patches, dtype=torch.float32),
@@ -321,7 +320,7 @@ transform = transforms.Compose([
 bids_dir = "/home/user/Documents/raph/preprocessed_datasets/ISLES2022"
 dataset = BidsDataset(bids_dir, transform=transform, patch_size=PATCH_SIZE)
 
-train_size = int(0.8 * len(dataset))
+train_size = 10 #int(0.8 * len(dataset))
 val_size = len(dataset) - train_size
 train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
 
@@ -331,47 +330,67 @@ val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_w
 # Mixed precision training scaler
 scaler = torch.cuda.amp.GradScaler()
 
+def plot_and_save_image(image_tensor):
+    # Convert the PyTorch tensor to a numpy array
+    image_array = image_tensor.cpu().detach().numpy().astype(np.float32)
+    # Create an ANTs image from the numpy array
+    ants.from_numpy(image_array).plot()
+
+
+
 # Train the model
 for epoch in range(NUM_EPOCHS):
     model.train()
     epoch_loss = 0
-    epoch_dice = 0  
+    epoch_dice = 0
+    optimizer.zero_grad()  
     for batch_idx, (FLAIR, adc, dwi, target, coord_patch_list) in enumerate(train_loader):
         targets = target.to(DEVICE)
         print('batch number', batch_idx)
-        
         for j in range(len(FLAIR[0])):
             concatenated_data = torch.stack((FLAIR[:, j], adc[:, j], dwi[:, j]), dim=1).to(DEVICE)
             concatenated_data = concatenated_data.type(torch.float32)
+
             # Forward pass with mixed precision
             with torch.cuda.amp.autocast():
                 scores = model(concatenated_data)
 
-            # Compute Dice Loss
+            # Flatten predictions and targets
             predictions_flat = scores.view(scores.size(0), -1, scores.size(2), scores.size(3))
             #print('predictions_flat', predictions_flat.shape)
             targets_flat = targets[:, j].view(targets.size(0), -1, targets.size(2), targets.size(3))
             #print('targets_flat', targets_flat.shape)
+            #plot_and_save_image(predictions_flat[0])
+            #plot_and_save_image(targets_flat[0])
 
-            intersection = torch.sum(predictions_flat * targets_flat, dim=(1, 2, 3))
-            union = torch.sum(predictions_flat, dim=(1, 2, 3)) + torch.sum(targets_flat, dim=(1, 2, 3))
+            # Threshold predictions
+            binary_predictions = (predictions_flat > threshold).float()
+
+            # Compute Dice Loss
+            intersection = torch.sum(binary_predictions * targets_flat, dim=1)
+            union = torch.sum(binary_predictions, dim=1) + torch.sum(targets_flat, dim=1)
             dice = (2.0 * intersection + 1.0) / (union + 1.0)
 
-            # Compute loss
-            loss = criterion(predictions_flat, targets_flat)
+            # Compute the loss
+            loss = criterion(predictions_flat.float(), targets_flat.float())
 
-            # Backward pass with mixed precision
-            scaler.scale(loss).backward()
-
+            # Accumulate loss and Dice score for the batch
             epoch_loss += loss.item()
             epoch_dice += dice.mean().item()
 
+            # Compute global loss
+            global_loss = loss + (1-dice.mean())
+
+            # Backward pass with mixed precision
+            scaler.scale(global_loss).backward()
+                
             del concatenated_data, scores, predictions_flat, targets_flat
             torch.cuda.empty_cache()
 
         # Optimizer step
         scaler.step(optimizer)
         scaler.update()
+        optimizer.zero_grad()
 
         if batch_idx % 10 == 0:
             print(f"Epoch [{epoch + 1}/{NUM_EPOCHS}], Batch [{batch_idx + 1}/{len(train_loader)}], Loss: {loss.item():.4f}, Dice: {dice.mean().item():.4f}")
@@ -403,25 +422,19 @@ with torch.no_grad():
 
         with torch.cuda.amp.autocast():
             scores = model(data)
-            loss = criterion(scores, targets)
+            scores=(scores > threshold).int()
             dice = dice_score(scores, targets)  
 
         val_loss += loss.item()
         val_dice += dice.item() 
 
-avg_val_loss = val_loss / len(val_loader)
 avg_val_dice = val_dice / len(val_loader)  
-print(f"Validation Loss after epoch {epoch + 1}: {avg_val_loss:.4f}, Dice: {avg_val_dice:.4f}")  
+print(f"Validation DICE after epoch {epoch + 1}: {avg_val_dice:.4f}")  
 
 # Log validation metrics to TensorBoard
-writer.add_scalar('Loss/val', avg_val_loss, epoch)
 writer.add_scalar('Dice/val', avg_val_dice, epoch)  
 
 # Close the TensorBoard writer
 writer.close()
 
 print("Training complete!")
-
-
-
-

@@ -67,6 +67,7 @@ class UNet3D(nn.Module):
         self.up1 = UpBlock(64, 32)
         
         self.final_conv = nn.Conv3d(32, out_channels, kernel_size=1, stride=1)
+        self.sigmoid = nn.Sigmoid()
     
     def forward(self, x):
         # Initial Convolution
@@ -90,6 +91,7 @@ class UNet3D(nn.Module):
         
         # Final Convolution
         x = self.final_conv(x)
+        x = self.sigmoid(x)
         return x
 
 # Création du modèle
