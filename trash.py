@@ -18,6 +18,7 @@ from scipy.ndimage import rotate, zoom
 from skimage.transform import resize
 import random
 import numpy as np
+import gc
 
 # Set seed for reproducibility
 torch.manual_seed(0)
@@ -29,7 +30,7 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 model = unet.UNet3D(in_channels=3, out_channels=1).to(DEVICE)  # Adjust in_channels for 3 input modalities
 ORIGINAL_SIZE = [182, 218, 182]
 NUM_EPOCHS = 10
-LEARNING_RATE = 1e-3
+LEARNING_RATE = 1e-2
 BATCH_SIZE = 2
 PATCH_SIZE = [2, 2, 128, 128, 128]
 criterion = nn.BCELoss()
@@ -59,6 +60,41 @@ class RandomRotateScale:
             img[:, :, i] = rotate(img[:, :, i], angle_z, reshape=False, mode='reflect')
         return img
 
+    def scale(self, image):
+        # Generate a random scale parameter
+        scale = np.random.uniform(0.7, 1.4)
+
+        # Scale the image
+        scaled_image = zoom(image, scale)
+
+        # Initialize an empty array with the original image size
+        output_image = np.zeros_like(image)
+
+        # If the scaled image is larger than the original image, crop it
+        if scale > 1:
+            start_x = (scaled_image.shape[0] - image.shape[0]) // 2
+            start_y = (scaled_image.shape[1] - image.shape[1]) // 2
+            start_z = (scaled_image.shape[2] - image.shape[2]) // 2
+
+            output_image = scaled_image[
+                start_x:start_x + image.shape[0],
+                start_y:start_y + image.shape[1],
+                start_z:start_z + image.shape[2]
+            ]
+        # If the scaled image is smaller than the original image, pad it
+        else:
+            pad_x = (image.shape[0] - scaled_image.shape[0]) // 2
+            pad_y = (image.shape[1] - scaled_image.shape[1]) // 2
+            pad_z = (image.shape[2] - scaled_image.shape[2]) // 2
+
+            output_image[
+                pad_x:pad_x + scaled_image.shape[0],
+                pad_y:pad_y + scaled_image.shape[1],
+                pad_z:pad_z + scaled_image.shape[2]
+            ] = scaled_image
+
+        return output_image
+
     def __call__(self, sample):
         if not isinstance(sample, list):
             raise TypeError("Sample must be a list or iterable.")
@@ -74,24 +110,17 @@ class RandomRotateScale:
 
             for i in range(len(sample)):
                 sample[i] = self.rotate_3d(sample[i], angle_x, angle_y, angle_z)
-                print('sample rotate', sample[i].shape, i)
 
         if do_scale or do_both:
-            scale = random.uniform(0.7, 1.4)
-            new_size = [sample[0].shape[0]] + [int(dim * scale) for dim in sample[0].shape[1:]]
-
             for i in range(len(sample)):
-                resized_sample = resize(sample[i], new_size, order=2, anti_aliasing=True)
-                if scale > 1:  # Crop to original size
-                    start_indices = [0] + [(new_dim - orig_dim) // 2 for new_dim, orig_dim in zip(new_size[1:], self.patch_size[1:])]
-                    sample[i] = resized_sample[start_indices[0]:start_indices[0]+self.patch_size[0],
-                                            start_indices[1]:start_indices[1]+self.patch_size[1],
-                                            start_indices[2]:start_indices[2]+self.patch_size[2]]
-                else:  # Pad to original size
-                    pad_width = [(0, 0)] + [(orig_dim - new_dim) // 2 for new_dim, orig_dim in zip(new_size[1:], self.patch_size[1:])]
-                    sample[i] = np.pad(resized_sample, pad_width, mode='constant')
-                print('sample scale', sample[i].shape, i)
+                img = sample[i]
+                # Resize image
+                sample[i] = self.scale(img)
+
+        print('do rotate', do_rotate, 'do scale', do_scale, 'do both', do_both)
+        print('sample final', np.array(sample).shape)
         return sample
+
 
 class RandomGaussianNoise:
     def __init__(self, prob=0.15):
@@ -177,9 +206,9 @@ class RandomGamma:
 
     def __call__(self, sample):
         if random.random() < self.prob:
-            min_val, max_val = np.min(sample), np.max(sample)
             for i in range(len(sample)):
-                sample[i] = (sample[i] - min_val) / (max_val - min_val)
+                min_val, max_val = np.min(sample[i]), np.max(sample[i])
+                sample[i] = (sample[i] - min_val) / (max_val - min_val + 1e-6)
                 g = random.uniform(0.7, 1.5)
                 if random.random() < self.prob:
                     sample[i] = 1 - ((1 - sample[i]) ** g)
@@ -238,16 +267,22 @@ class BidsDataset(Dataset):
         mask_img = ants.image_read(mask_path).numpy()
 
         # Normalize images
-        FLAIR_img = (FLAIR_img - FLAIR_img.min()) / (FLAIR_img.max() - FLAIR_img.min())
-        adc_img = (adc_img - adc_img.min()) / (adc_img.max() - adc_img.min())
-        dwi_img = (dwi_img - dwi_img.min()) / (dwi_img.max() - dwi_img.min())
+        FLAIR_img = (FLAIR_img - FLAIR_img.min()) / (FLAIR_img.max() - FLAIR_img.min()+1e-6)
+        adc_img = (adc_img - adc_img.min()) / (adc_img.max() - adc_img.min()+1e-6)
+        dwi_img = (dwi_img - dwi_img.min()) / (dwi_img.max() - dwi_img.min()+1e-6)
 
         # Apply transform if provided
         if self.transform:
             data = [FLAIR_img, adc_img, dwi_img, mask_img]
             data = self.transform(data)
             FLAIR_img, adc_img, dwi_img, mask_img = data
-        
+
+        # Normalize images again after applying transforms
+        FLAIR_img = (FLAIR_img - FLAIR_img.min()) / (FLAIR_img.max() - FLAIR_img.min()+1e-6)
+        adc_img = (adc_img - adc_img.min()) / (adc_img.max() - adc_img.min()+1e-6)
+        dwi_img = (dwi_img - dwi_img.min()) / (dwi_img.max() - dwi_img.min()+1e-6)
+        mask_img = (mask_img - mask_img.min()) / (mask_img.max() - mask_img.min()+1e-6)
+
         # Extract patches
         FLAIR_patches, adc_patches, dwi_patches, mask_patches, coord_patch_list = self.extract_patches(FLAIR_img, adc_img, dwi_img, mask_img)
         # Return the patches as torch tensors
@@ -288,25 +323,32 @@ class BidsDataset(Dataset):
         return np.array(FlAIR_patch_list), np.array(adc_patch_list), np.array(dwi_patch_list), np.array(mask_patch_list), np.array(coords_list)
 
 
-def reconstruct_segmented_image(predictions, image_shape, patch_size, coords, original_shape):
+def reconstruct_segmented_image(predictions, image_shape, coords, original_shape):
+    num_images, num_patches, pd, ph, pw = predictions.shape
     d, h, w = image_shape
-    pd, ph, pw = patch_size
-    segmented_image = np.zeros(image_shape)
-    count_map = np.zeros(image_shape)
+    all_segmented_images = []
     
-    for (patch, (z, y, x)) in zip(predictions, coords):
-        segmented_image[z:z+pd, y:y+ph, x:x+pw] += patch
-        count_map[z:z+pd, y:y+ph, x:x+pw] += 1
+    for image_index in range(num_images):
+        segmented_image = np.zeros(image_shape)
+        count_map = np.zeros(image_shape)
+        
+        for patch_index in range(num_patches):
+            patch = predictions[image_index, patch_index]
+            z, y, x = coords[image_index, patch_index]
+            segmented_image[z:z+pd, y:y+ph, x:x+pw] += patch
+            count_map[z:z+pd, y:y+ph, x:x+pw] += 1
+        
+        # Adjust for overlap
+        segmented_image /= count_map
+        d2, h2, w2 = int((d-original_shape[0])/2), int((h-original_shape[1])/2), int((w-original_shape[2])/2)
+        segmented_image = segmented_image[d2:d-d2, h2:h-h2, w2:w-w2]
+        all_segmented_images.append(segmented_image)
     
-    # Adjust for overlap
-    segmented_image /= count_map
-    print(segmented_image.shape)
-    d2, h2, w2 = int((d-original_shape[0])/2), int((h-original_shape[1])/2), int((w-original_shape[2])/2)
-    return segmented_image[d2:d-d2, h2:h-h2, w2:w-w2]
+    return np.array(all_segmented_images)
 
 
 transform = transforms.Compose([
-    #RandomRotateScale(patch_size=PATCH_SIZE),
+    RandomRotateScale(patch_size=PATCH_SIZE),
     #RandomGaussianNoise(),
     #RandomGaussianBlur(),
     #RandomBrightness(),
@@ -337,7 +379,6 @@ def plot_and_save_image(image_tensor):
     ants.from_numpy(image_array).plot()
 
 
-
 # Train the model
 for epoch in range(NUM_EPOCHS):
     model.train()
@@ -363,17 +404,13 @@ for epoch in range(NUM_EPOCHS):
             #plot_and_save_image(predictions_flat[0])
             #plot_and_save_image(targets_flat[0])
 
-            # Threshold predictions
-            binary_predictions = (predictions_flat > threshold).float()
-
             # Compute Dice Loss
-            intersection = torch.sum(binary_predictions * targets_flat, dim=1)
-            union = torch.sum(binary_predictions, dim=1) + torch.sum(targets_flat, dim=1)
+            intersection = torch.sum(predictions_flat * targets_flat, dim=1)
+            union = torch.sum(predictions_flat, dim=1) + torch.sum(targets_flat, dim=1)
             dice = (2.0 * intersection + 1.0) / (union + 1.0)
 
             # Compute the loss
             loss = criterion(predictions_flat.float(), targets_flat.float())
-
             # Accumulate loss and Dice score for the batch
             epoch_loss += loss.item()
             epoch_dice += dice.mean().item()
@@ -411,30 +448,60 @@ writer.close()
 print("Training complete!")
 
 
-# Evaluate the model
 model.eval()
-val_loss = 0
-val_dice = 0  
+# Initialize lists to store Dice scores
+dice_scores = []
 with torch.no_grad():
-    for FLAIR, adc, dwi, targets in val_loader:
-        data = torch.cat((FLAIR, adc, dwi), dim=1).to(DEVICE, non_blocking=True)
-        targets = targets.to(DEVICE, non_blocking=True)
+    for batch_idx, (FLAIR, adc, dwi, target, coord_patch_list) in enumerate(val_loader):
+        targets = target.to(DEVICE)
+        predictions_flat = []
 
-        with torch.cuda.amp.autocast():
-            scores = model(data)
-            scores=(scores > threshold).int()
-            dice = dice_score(scores, targets)  
+        for j in range(len(FLAIR[0])):
+            concatenated_data = torch.stack((FLAIR[:, j], adc[:, j], dwi[:, j]), dim=1).to(DEVICE)
+            concatenated_data = concatenated_data.type(torch.float32)
 
-        val_loss += loss.item()
-        val_dice += dice.item() 
+            # Forward pass
+            scores = model(concatenated_data)
+            scores = scores.view(scores.size(0), -1, scores.size(2), scores.size(3))
+            predictions_flat.append(scores.cpu())
+            del scores  # Free up memory
 
-avg_val_dice = val_dice / len(val_loader)  
-print(f"Validation DICE after epoch {epoch + 1}: {avg_val_dice:.4f}")  
+        predictions_flat = torch.stack(predictions_flat).numpy()
+        predictions_flat = np.transpose(predictions_flat, (1, 0, 2, 3, 4))
 
-# Log validation metrics to TensorBoard
-writer.add_scalar('Dice/val', avg_val_dice, epoch)  
+        # Reconstruct the segmented image from patches
+        reconstructed_image = reconstruct_segmented_image(
+            predictions_flat,
+            [256, 256, 256],
+            coord_patch_list,
+            ORIGINAL_SIZE
+        )
 
-# Close the TensorBoard writer
-writer.close()
+        reconstructed_groundtruth = reconstruct_segmented_image(
+            target.cpu().numpy(),
+            [256, 256, 256],
+            coord_patch_list,
+            ORIGINAL_SIZE
+        )
 
-print("Training complete!")
+        for i in range(BATCH_SIZE):
+            # Binarize the reconstructed image
+            binarized_image = (reconstructed_image[i] > threshold).astype(np.float32)
+            reconstructed_gt = reconstructed_groundtruth[i]
+            # Compute Dice score
+            intersection = np.sum(binarized_image * reconstructed_gt, axis=1)
+            union = np.sum(binarized_image, axis=1) + np.sum(reconstructed_gt, axis=1)
+            dice = (2.0 * intersection + 1.0) / (union + 1.0)
+            dice_scores.append(dice.mean())
+
+        if batch_idx % 10 == 0:
+            print(f"Batch [{batch_idx + 1}/{len(val_loader)}], Dice Score: {dice.mean():.4f}")
+
+        # Free up memory
+        del FLAIR, adc, dwi, target, concatenated_data, predictions_flat, reconstructed_image, reconstructed_groundtruth
+        torch.cuda.empty_cache()
+        gc.collect()
+        
+# Calculate the average Dice score for the entire validation set
+avg_dice_score = np.mean(dice_scores)
+print(f"Average Dice Score: {avg_dice_score:.4f}")
