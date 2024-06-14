@@ -361,7 +361,7 @@ transform = transforms.Compose([
 bids_dir = "/home/user/Documents/raph/preprocessed_datasets/ISLES2022"
 dataset = BidsDataset(bids_dir, transform=transform, patch_size=PATCH_SIZE)
 
-train_size = int(0.8 * len(dataset))
+train_size = 10 #int(0.8 * len(dataset))
 val_size = len(dataset) - train_size
 train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
 
@@ -484,8 +484,8 @@ for epoch in range(NUM_EPOCHS):
                 reconstructed_gt = reconstructed_groundtruth[i]
 
                 # Compute Dice score
-                intersection = np.sum(binarized_image * reconstructed_gt, dim=1)
-                union = np.sum(binarized_image, dim=1) + np.sum(reconstructed_gt, dim=1)
+                intersection = np.sum(binarized_image * reconstructed_gt, axis=1)
+                union = np.sum(binarized_image, axis=1) + np.sum(reconstructed_gt, axis=1)
                 dice = (2.0 * intersection) / (union + 1e-6)
                 dice_scores.append(dice.mean())
 
