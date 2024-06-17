@@ -19,6 +19,8 @@ from skimage.transform import resize
 import random
 import numpy as np
 import gc
+from time import time
+from torch.optim.lr_scheduler import PolynomialLR
 
 # Set seed for reproducibility
 torch.manual_seed(0)
@@ -29,14 +31,14 @@ random.seed(0)  # Set seed for random module
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 model = unet.UNet3D(in_channels=3, out_channels=1).to(DEVICE)  # Adjust in_channels for 3 input modalities
 ORIGINAL_SIZE = [182, 218, 182]
-NUM_EPOCHS = 10
-LEARNING_RATE = 1e-2
+NUM_EPOCHS = 100
+INITIAL_LEARNING_RATE = 1e-2
 BATCH_SIZE = 2
 PATCH_SIZE = [2, 2, 128, 128, 128]
 criterion = nn.BCELoss()
-optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
+optimizer = torch.optim.SGD(model.parameters(), lr=INITIAL_LEARNING_RATE, momentum=0.99, nesterov=True)
 threshold = 0.5
-
+power = 0.9
 # Initialize TensorBoard writer
 log_dir = 'runs/UNet3D_experiment_1'
 writer = SummaryWriter(log_dir)
@@ -117,10 +119,7 @@ class RandomRotateScale:
                 # Resize image
                 sample[i] = self.scale(img)
 
-        print('do rotate', do_rotate, 'do scale', do_scale, 'do both', do_both)
-        print('sample final', np.array(sample).shape)
         return sample
-
 
 class RandomGaussianNoise:
     def __init__(self, prob=0.15):
@@ -201,20 +200,22 @@ class RandomLowResolution:
         return sample
 
 class RandomGamma:
-    def __init__(self, prob=0.15):
+    def __init__(self, prob=0.15, prob2=0.15):
         self.prob = prob
+        self.prob2 = prob2
 
     def __call__(self, sample):
         if random.random() < self.prob:
+            g = random.uniform(0.7, 1.5)
+            if random.random() < self.prob2:
+                for i in range(len(sample)):
+                    sample[i] = 1 - ((1 - sample[i]) ** g)
             for i in range(len(sample)):
                 min_val, max_val = np.min(sample[i]), np.max(sample[i])
                 sample[i] = (sample[i] - min_val) / (max_val - min_val + 1e-6)
-                g = random.uniform(0.7, 1.5)
-                if random.random() < self.prob:
-                    sample[i] = 1 - ((1 - sample[i]) ** g)
-                else:
-                    sample[i] = sample[i] ** g
+                sample[i] = sample[i] ** g
                 sample[i] = (sample[i] * (max_val - min_val)) + min_val
+                    
         return sample
 
 class RandomMirror:
@@ -322,7 +323,6 @@ class BidsDataset(Dataset):
                     coords_list.append((i * 64, j * 64, k * 64))  # Step size is 64
         return np.array(FlAIR_patch_list), np.array(adc_patch_list), np.array(dwi_patch_list), np.array(mask_patch_list), np.array(coords_list)
 
-
 def reconstruct_segmented_image(predictions, image_shape, coords, original_shape):
     num_images, num_patches, pd, ph, pw = predictions.shape
     d, h, w = image_shape
@@ -346,48 +346,41 @@ def reconstruct_segmented_image(predictions, image_shape, coords, original_shape
     
     return np.array(all_segmented_images)
 
-
 transform = transforms.Compose([
     RandomRotateScale(patch_size=PATCH_SIZE),
-    #RandomGaussianNoise(),
-    #RandomGaussianBlur(),
-    #RandomBrightness(),
-    #RandomContrast(),
-    #RandomLowResolution(),
-    #RandomGamma(), 
-    #RandomMirror(), 
+    RandomGaussianNoise(),
+    RandomGaussianBlur(),
+    RandomBrightness(),
+    RandomContrast(),
+    RandomLowResolution(),
+    RandomGamma(), 
+    RandomMirror(), 
 ])
 
 # Initialize Dataset and DataLoader
 bids_dir = "/home/user/Documents/raph/preprocessed_datasets/ISLES2022"
 dataset = BidsDataset(bids_dir, transform=transform, patch_size=PATCH_SIZE)
 
-train_size = 10 #int(0.8 * len(dataset))
+train_size = int(0.8 * len(dataset))
 val_size = len(dataset) - train_size
 train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
 
-train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True)
-val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)
+train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=2, pin_memory=True)
+val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=2, pin_memory=True)
+scheduler = PolynomialLR(optimizer, total_iters=NUM_EPOCHS, power=power)
 
 # Mixed precision training scaler
 scaler = torch.cuda.amp.GradScaler()
-
-def plot_and_save_image(image_tensor):
-    # Convert the PyTorch tensor to a numpy array
-    image_array = image_tensor.cpu().detach().numpy().astype(np.float32)
-    # Create an ANTs image from the numpy array
-    ants.from_numpy(image_array).plot()
-
 
 # Train the model
 for epoch in range(NUM_EPOCHS):
     model.train()
     epoch_loss = 0
     epoch_dice = 0
-    optimizer.zero_grad()  
+    start_time = time()
     for batch_idx, (FLAIR, adc, dwi, target, coord_patch_list) in enumerate(train_loader):
         targets = target.to(DEVICE)
-        print('batch number', batch_idx)
+        #print('batch number', batch_idx)
         for j in range(len(FLAIR[0])):
             concatenated_data = torch.stack((FLAIR[:, j], adc[:, j], dwi[:, j]), dim=1).to(DEVICE)
             concatenated_data = concatenated_data.type(torch.float32)
@@ -398,31 +391,30 @@ for epoch in range(NUM_EPOCHS):
 
             # Flatten predictions and targets
             predictions_flat = scores.view(scores.size(0), -1, scores.size(2), scores.size(3))
-            #print('predictions_flat', predictions_flat.shape)
             targets_flat = targets[:, j].view(targets.size(0), -1, targets.size(2), targets.size(3))
-            #print('targets_flat', targets_flat.shape)
-            #plot_and_save_image(predictions_flat[0])
-            #plot_and_save_image(targets_flat[0])
 
             # Compute Dice Loss
             intersection = torch.sum(predictions_flat * targets_flat, dim=1)
             union = torch.sum(predictions_flat, dim=1) + torch.sum(targets_flat, dim=1)
-            dice = (2.0 * intersection + 1.0) / (union + 1.0)
+            dice = (2.0 * intersection) / (union + 1e-6)
 
             # Compute the loss
             loss = criterion(predictions_flat.float(), targets_flat.float())
+
             # Accumulate loss and Dice score for the batch
             epoch_loss += loss.item()
             epoch_dice += dice.mean().item()
 
             # Compute global loss
-            global_loss = loss + (1-dice.mean())
+            global_loss = (loss + (1-dice.mean().item())) / 2
 
             # Backward pass with mixed precision
             scaler.scale(global_loss).backward()
                 
+            # Free up memory
             del concatenated_data, scores, predictions_flat, targets_flat
             torch.cuda.empty_cache()
+            gc.collect()
 
         # Optimizer step
         scaler.step(optimizer)
@@ -439,69 +431,82 @@ for epoch in range(NUM_EPOCHS):
     writer.add_scalar('Dice/train', avg_epoch_dice, epoch)  
 
     torch.save(model.state_dict(), f"unet_epoch_{epoch + 1}.pth")
-
+    end_time = time()
+    print(f'Epoch [{epoch+1}/{NUM_EPOCHS}] completed. Time taken: {(end_time - start_time):.2f} seconds.')
     print(f"Epoch [{epoch + 1}/{NUM_EPOCHS}], Average Loss: {avg_epoch_loss:.4f}, Average Dice: {avg_epoch_dice:.4f}")
+    print("Validation started...")
+
+    # Validation
+    model.eval()
+    dice_scores = []
+    with torch.no_grad():
+        for batch_idx, (FLAIR, adc, dwi, target, coord_patch_list) in enumerate(val_loader):
+            targets = target.to(DEVICE)
+            predictions_flat = []
+
+            for j in range(len(FLAIR[0])):
+                concatenated_data = torch.stack((FLAIR[:, j], adc[:, j], dwi[:, j]), dim=1).to(DEVICE)
+                concatenated_data = concatenated_data.type(torch.float32)
+
+                # Forward pass
+                scores = model(concatenated_data)
+                scores = scores.view(scores.size(0), -1, scores.size(2), scores.size(3))
+                predictions_flat.append(scores.cpu())
+                del scores  # Free up memory
+
+            predictions_flat = torch.stack(predictions_flat).numpy()
+            predictions_flat = np.transpose(predictions_flat, (1, 0, 2, 3, 4))
+
+            # Reconstruct the segmented image from patches
+            reconstructed_image = reconstruct_segmented_image(
+                predictions_flat,
+                [256, 256, 256],
+                coord_patch_list,
+                ORIGINAL_SIZE
+            )
+
+            reconstructed_groundtruth = reconstruct_segmented_image(
+                target.cpu().numpy(),
+                [256, 256, 256],
+                coord_patch_list,
+                ORIGINAL_SIZE
+            )
+
+            for i in range(BATCH_SIZE):
+                # Binarize the reconstructed image
+                binarized_image = (reconstructed_image[i] > threshold).astype(np.float32)
+                reconstructed_gt = reconstructed_groundtruth[i]
+
+                # Compute Dice score
+                intersection = np.sum(binarized_image * reconstructed_gt, axis=1)
+                union = np.sum(binarized_image, axis=1) + np.sum(reconstructed_gt, axis=1)
+                dice = (2.0 * intersection) / (union + 1e-6)
+                dice_scores.append(dice.mean())
+
+            if batch_idx % 10 == 0:
+                print(f"Batch [{batch_idx + 1}/{len(val_loader)}], Dice Score: {dice.mean():.4f}")
+
+            # Free up memory
+            del FLAIR, adc, dwi, target, concatenated_data, predictions_flat, reconstructed_image, reconstructed_groundtruth
+            torch.cuda.empty_cache()
+            gc.collect()
+    
+    #Step the learning rate scheduler
+    scheduler.step()
+
+    # Print the learning rate
+    print(f"Epoch {epoch + 1}/{NUM_EPOCHS}, Learning Rate: {scheduler.get_last_lr()[0]}")
+
+    # Calculate the average Dice score for the entire validation set
+    avg_dice_score = np.mean(dice_scores)
+    print(f"Average Dice Score: {avg_dice_score:.4f}")
+
+    # Log the average Dice score for the validation set
+    writer.add_scalar('Dice/val', avg_dice_score, epoch)
+    
+    # Clear cache and collect garbage
+    torch.cuda.empty_cache()
+    gc.collect()
 
 # Close the TensorBoard writer
 writer.close()
-
-print("Training complete!")
-
-
-model.eval()
-# Initialize lists to store Dice scores
-dice_scores = []
-with torch.no_grad():
-    for batch_idx, (FLAIR, adc, dwi, target, coord_patch_list) in enumerate(val_loader):
-        targets = target.to(DEVICE)
-        predictions_flat = []
-
-        for j in range(len(FLAIR[0])):
-            concatenated_data = torch.stack((FLAIR[:, j], adc[:, j], dwi[:, j]), dim=1).to(DEVICE)
-            concatenated_data = concatenated_data.type(torch.float32)
-
-            # Forward pass
-            scores = model(concatenated_data)
-            scores = scores.view(scores.size(0), -1, scores.size(2), scores.size(3))
-            predictions_flat.append(scores.cpu())
-            del scores  # Free up memory
-
-        predictions_flat = torch.stack(predictions_flat).numpy()
-        predictions_flat = np.transpose(predictions_flat, (1, 0, 2, 3, 4))
-
-        # Reconstruct the segmented image from patches
-        reconstructed_image = reconstruct_segmented_image(
-            predictions_flat,
-            [256, 256, 256],
-            coord_patch_list,
-            ORIGINAL_SIZE
-        )
-
-        reconstructed_groundtruth = reconstruct_segmented_image(
-            target.cpu().numpy(),
-            [256, 256, 256],
-            coord_patch_list,
-            ORIGINAL_SIZE
-        )
-
-        for i in range(BATCH_SIZE):
-            # Binarize the reconstructed image
-            binarized_image = (reconstructed_image[i] > threshold).astype(np.float32)
-            reconstructed_gt = reconstructed_groundtruth[i]
-            # Compute Dice score
-            intersection = np.sum(binarized_image * reconstructed_gt, axis=1)
-            union = np.sum(binarized_image, axis=1) + np.sum(reconstructed_gt, axis=1)
-            dice = (2.0 * intersection + 1.0) / (union + 1.0)
-            dice_scores.append(dice.mean())
-
-        if batch_idx % 10 == 0:
-            print(f"Batch [{batch_idx + 1}/{len(val_loader)}], Dice Score: {dice.mean():.4f}")
-
-        # Free up memory
-        del FLAIR, adc, dwi, target, concatenated_data, predictions_flat, reconstructed_image, reconstructed_groundtruth
-        torch.cuda.empty_cache()
-        gc.collect()
-        
-# Calculate the average Dice score for the entire validation set
-avg_dice_score = np.mean(dice_scores)
-print(f"Average Dice Score: {avg_dice_score:.4f}")

@@ -2,7 +2,7 @@ import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, SubsetRandomSampler
 import ants
 import numpy as np
 import UNet_model as unet
@@ -20,6 +20,8 @@ import random
 import numpy as np
 import gc
 from time import time
+from torch.optim.lr_scheduler import PolynomialLR
+
 
 # Set seed for reproducibility
 torch.manual_seed(0)
@@ -30,14 +32,14 @@ random.seed(0)  # Set seed for random module
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 model = unet.UNet3D(in_channels=3, out_channels=1).to(DEVICE)  # Adjust in_channels for 3 input modalities
 ORIGINAL_SIZE = [182, 218, 182]
-NUM_EPOCHS = 10
-LEARNING_RATE = 1e-2
+NUM_EPOCHS = 100
+INITIAL_LEARNING_RATE = 1e-2
 BATCH_SIZE = 2
 PATCH_SIZE = [2, 2, 128, 128, 128]
 criterion = nn.BCELoss()
-optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
+optimizer = torch.optim.SGD(model.parameters(), lr=INITIAL_LEARNING_RATE, momentum=0.99, nesterov=True)
 threshold = 0.5
-
+power = 0.9
 # Initialize TensorBoard writer
 log_dir = 'runs/UNet3D_experiment_1'
 writer = SummaryWriter(log_dir)
@@ -200,19 +202,19 @@ class RandomLowResolution:
         return sample
 
 class RandomGamma:
-    def __init__(self, prob=0.15):
+    def __init__(self, prob=0.15, prob2=0.15):
         self.prob = prob
+        self.prob2 = prob2
 
     def __call__(self, sample):
         if random.random() < self.prob:
+            g = random.uniform(0.7, 1.5)
             for i in range(len(sample)):
                 min_val, max_val = np.min(sample[i]), np.max(sample[i])
                 sample[i] = (sample[i] - min_val) / (max_val - min_val + 1e-6)
-                g = random.uniform(0.7, 1.5)
-                if random.random() < self.prob:
-                    sample[i] = 1 - ((1 - sample[i]) ** g)
-                else:
-                    sample[i] = sample[i] ** g
+                if random.random() < self.prob2:
+                    sample[i] = 1 - (1 - sample[i]) ** g
+                sample[i] = sample[i] ** g
                 sample[i] = (sample[i] * (max_val - min_val)) + min_val
         return sample
 
@@ -264,11 +266,6 @@ class BidsDataset(Dataset):
         adc_img = ants.image_read(adc_path).numpy()
         dwi_img = ants.image_read(dwi_path).numpy()
         mask_img = ants.image_read(mask_path).numpy()
-
-        # Normalize images
-        FLAIR_img = (FLAIR_img - FLAIR_img.min()) / (FLAIR_img.max() - FLAIR_img.min()+1e-6)
-        adc_img = (adc_img - adc_img.min()) / (adc_img.max() - adc_img.min()+1e-6)
-        dwi_img = (dwi_img - dwi_img.min()) / (dwi_img.max() - dwi_img.min()+1e-6)
 
         # Apply transform if provided
         if self.transform:
@@ -354,29 +351,26 @@ transform = transforms.Compose([
     RandomContrast(),
     RandomLowResolution(),
     RandomGamma(), 
-    RandomMirror(), 
+    RandomMirror(),
 ])
 
 # Initialize Dataset and DataLoader
 bids_dir = "/home/user/Documents/raph/preprocessed_datasets/ISLES2022"
 dataset = BidsDataset(bids_dir, transform=transform, patch_size=PATCH_SIZE)
-
-train_size = 10 #int(0.8 * len(dataset))
+ 
+train_size = int(0.8 * len(dataset))
 val_size = len(dataset) - train_size
-train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
-
-train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True)
-val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)
+train_indices, val_indices = random_split(range(len(dataset)), [train_size, val_size])
+ 
+train_dataset = BidsDataset(bids_dir, transform=transform, patch_size=PATCH_SIZE)
+val_dataset = BidsDataset(bids_dir, transform=None, patch_size=PATCH_SIZE)
+ 
+train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, num_workers=2, pin_memory=True, sampler=SubsetRandomSampler(train_indices))
+val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, num_workers=2, pin_memory=True, sampler=SubsetRandomSampler(val_indices))
+scheduler = PolynomialLR(optimizer, total_iters=NUM_EPOCHS, power=power)
 
 # Mixed precision training scaler
 scaler = torch.cuda.amp.GradScaler()
-
-def plot_and_save_image(image_tensor):
-    # Convert the PyTorch tensor to a numpy array
-    image_array = image_tensor.cpu().detach().numpy().astype(np.float32)
-    # Create an ANTs image from the numpy array
-    ants.from_numpy(image_array).plot()
-
 
 # Train the model
 for epoch in range(NUM_EPOCHS):
@@ -496,7 +490,13 @@ for epoch in range(NUM_EPOCHS):
             del FLAIR, adc, dwi, target, concatenated_data, predictions_flat, reconstructed_image, reconstructed_groundtruth
             torch.cuda.empty_cache()
             gc.collect()
-            
+    
+    #Step the learning rate scheduler
+    scheduler.step()
+
+    # Print the learning rate
+    print(f"Epoch {epoch + 1}/{NUM_EPOCHS}, Learning Rate: {scheduler.get_last_lr()[0]}")
+
     # Calculate the average Dice score for the entire validation set
     avg_dice_score = np.mean(dice_scores)
     print(f"Average Dice Score: {avg_dice_score:.4f}")
@@ -504,5 +504,9 @@ for epoch in range(NUM_EPOCHS):
     # Log the average Dice score for the validation set
     writer.add_scalar('Dice/val', avg_dice_score, epoch)
     
+    # Clear cache and collect garbage
+    torch.cuda.empty_cache()
+    gc.collect()
+
 # Close the TensorBoard writer
 writer.close()
