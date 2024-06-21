@@ -40,10 +40,10 @@ def move_files(patient_id, source_dirs, target_dir, file_mappings):
         target_dir (str): Target directory for the files.
         file_mappings (list): List of tuples with source and target file suffixes.
     """
-    patient_id_str = f'{int(patient_id):03d}'
+    patient_id_str = f'{int(patient_id):04d}'
     for source_dir, (file_suffix, target_suffix) in zip(source_dirs, file_mappings):
-        source_file = os.path.join(source_dir, f'sub-strokecase0{patient_id_str}_ses-0001_{file_suffix}.nii.gz')
-        target_file = os.path.join(target_dir, f'ISLES_{patient_id_str}_{target_suffix}.nii.gz')
+        source_file = os.path.join(source_dir, f'sub-{patient_id}_ses-0001_{file_suffix}.nii.gz')
+        target_file = os.path.join(target_dir, f'SOOP_{patient_id_str}_{target_suffix}.nii.gz')
         shutil.move(source_file, target_file)
 
 def convert_dataset_to_nnUNet(bids_dataset_path, output_path, list_of_patients):
@@ -70,18 +70,26 @@ def convert_dataset_to_nnUNet(bids_dataset_path, output_path, list_of_patients):
     file_mappings = [('FLAIR', '0000'), ('T1w','0001'), ('ADC', '0002'), ('dwi', '0003')]
 
     # Process training patients
-    for patient_id in list_of_patients[:-254]:
-        patient_base_dir = os.path.join(nnunet_base_path, f'sub-strokecase{int(patient_id):04d}', 'ses-0001')
+    for patient_id in list_of_patients[:-290]: # 1016 training patients but bad tsv file so we use 1016-36 because 36 patients are missing
+        patient_base_dir = os.path.join(nnunet_base_path, f'sub-{int(patient_id)}', 'ses-0001')
+        if not os.path.exists(os.path.join(nnunet_base_path, f'sub-{int(patient_id)}')):
+            print(f'Patient {patient_id} does not exist in the dataset. Skipping...', os.path.join(patient_base_dir, f'sub-{int(patient_id)}'))
+            continue
         move_files(patient_id, [os.path.join(patient_base_dir, d) for d in ['anat', 'anat', 'dwi', 'dwi']], image_train_dir, file_mappings)
-        shutil.move(os.path.join(nnunet_base_path, 'derivatives', f'sub-{int(patient_id):04d}', 'ses-0001', f'sub-{(patient_id):04d}_ses-0001_msk.nii.gz'),
-                    os.path.join(label_train_dir, f'SOOP_{int(patient_id):03d}.nii.gz'))
+        shutil.move(os.path.join(nnunet_base_path, 'derivatives', f'sub-{int(patient_id)}', 'ses-0001', f'sub-{(patient_id)}_ses-0001_msk.nii.gz'),
+                    os.path.join(label_train_dir, f'SOOP_{int(patient_id):04d}.nii.gz'))
+        print(f'Processed patient {patient_id}')
 
     # Process testing patients
-    for patient_id in list_of_patients[-254:]:
-        patient_base_dir = os.path.join(nnunet_base_path, f'sub-strokecase{int(patient_id):04d}', 'ses-0001')
+    for patient_id in list_of_patients[-290:]:
+        patient_base_dir = os.path.join(nnunet_base_path, f'sub-{int(patient_id)}', 'ses-0001')
+        if not os.path.exists(os.path.join(nnunet_base_path, f'sub-{int(patient_id)}')):
+            print(f'Patient {patient_id} does not exist in the dataset. Skipping...')
+            continue
         move_files(patient_id, [os.path.join(patient_base_dir, d) for d in ['anat', 'anat', 'dwi', 'dwi']], image_test_dir, file_mappings)
-        shutil.move(os.path.join(nnunet_base_path, 'derivatives', f'sub-{int(patient_id):04d}', 'ses-0001', f'sub-{int(patient_id):04d}_ses-0001_msk.nii.gz'),
-                    os.path.join(label_test_dir, f'SOOP_{int(patient_id):03d}.nii.gz'))
+        shutil.move(os.path.join(nnunet_base_path, 'derivatives', f'sub-{int(patient_id)}', 'ses-0001', f'sub-{int(patient_id)}_ses-0001_msk.nii.gz'),
+                    os.path.join(label_test_dir, f'SOOP_{int(patient_id):04d}.nii.gz'))
+        print(f'Processed patient {patient_id}')
 
     # Remove unnecessary folders
     for folder in os.listdir(nnunet_base_path):
