@@ -2,6 +2,7 @@
 import os
 import pandas as pd
 import ants
+import numpy as np
 
 # On titouan's workstation do source ~/.bash_profile before running the script
 
@@ -75,6 +76,12 @@ def registration(img_paths, template_address):
     registered_img.append(registered_mask)
     new_img_paths.append(img_paths[3].replace('brainExtracted.nii.gz', 'registered.nii.gz'))
 
+    # MASK to have 0 when out of the brain and not really small values (due to the interpolation)
+    new_mask=create_mask(img_paths[2], output_path='/home/user/Documents/raph/temporary/ISLES_temp/mask4registration.nii.gz')
+    registration_mask4registration2DWI = ants.registration(fixed=ants.image_read(img_paths[2]), moving=ants.image_read(new_mask), type_of_transform='Rigid', interpolator='nearestNeighbor')
+    registered_mask4registration2DWI = registration_mask4registration2DWI['warpedmovout']
+    registered_mask4registration = ants.apply_transforms(fixed=template, moving=registered_mask4registration2DWI, transformlist=registration_DWI['fwdtransforms'], interpolator='nearestNeighbor')
+
     # Reorder paths and images to maintain the original order
     new_img_paths[0], new_img_paths[1] = new_img_paths[1], new_img_paths[0]
     registered_img[0], registered_img[1] = registered_img[1], registered_img[0]
@@ -82,11 +89,18 @@ def registration(img_paths, template_address):
     for i in range(len(new_img_paths)):
         # Ensure that the registered images are resampled to match the template
         registered_img_resampled = ants.resample_image_to_target(registered_img[i], template, interp_type='lanczosWindowedSinc' if i != 3 else 'nearestNeighbor')
-        ants.image_write(registered_img_resampled, new_img_paths[i])  
+        registered_clean = registered_mask4registration * registered_img_resampled
+        ants.image_write(registered_clean, new_img_paths[i])  
 
     return new_img_paths
 
-
+def create_mask(image_path, output_path):
+    image = ants.image_read(image_path)
+    bool_mask = image.numpy() > 0
+    masked_image_array = np.where(bool_mask, 1, 0).astype('float32')
+    masked_image = ants.from_numpy(masked_image_array, origin=image.origin, spacing=image.spacing, direction=image.direction)
+    ants.image_write(masked_image, output_path)
+    return output_path
 
 def zscore_normalisation(img_paths):
     new_img_paths = []
@@ -96,12 +110,17 @@ def zscore_normalisation(img_paths):
         img = ants.image_read(img_path)
         img_np = img.numpy()
 
-        # Calculate mean and standard deviation for the entire image
-        mean = img_np.mean()
-        std = img_np.std()
+        # Calculate mean and standard deviation for the >0 values
+        mask=np.where(img_np>0)
 
-        # Perform z-score normalization
-        normalized_img_np = (img_np - mean) / std
+        mean = img_np[mask].mean()
+        std = img_np[mask].std()
+
+        # Initialize a copy of the image for normalized values
+        normalized_img_np = np.zeros_like(img_np)
+
+        # Perform z-score normalization only on >0 values
+        normalized_img_np[mask] = (img_np[mask] - mean) / max(std, 1e-8)
 
         # Create an ANTs image from the normalized numpy array
         normalized_img = ants.from_numpy(normalized_img_np, spacing=img.spacing, origin=img.origin, direction=img.direction)
@@ -168,19 +187,24 @@ def retrieve_out_paths(img_paths, temp_save_location, subject_id, session_id, pa
     return out_paths
 
 def save_images(subject_id, session_id, parameters, save_location, img_paths):
+    subject_id2 = subject_id
+    parts = subject_id2.split("strokecase")  # Split the ID at 'strokecase'
+    number_part = int(parts[1])  # Convert the numerical part to an integer to remove leading zeros
+    subject_id2 = "sub-" + str(number_part)  # Construct the new ID and assign it back
+    
     for i in range(len(img_paths)):
-
+        
         if 'dwi' in img_paths[i] or 'adc' in img_paths[i]:
-            save_path = os.path.join(save_location, f"{subject_id}", f"ses-{session_id}", "dwi", f"{subject_id}_ses-{session_id}_{parameters[i]}.nii.gz")
+            save_path = os.path.join(save_location, f"{subject_id2}", f"ses-{session_id}", "dwi", f"{subject_id2}_ses-{session_id}_{parameters[i]}.nii.gz")
 
         elif 'FLAIR' in img_paths[i]:
-            save_path = os.path.join(save_location, f"{subject_id}", f"ses-{session_id}", "anat", f"{subject_id}_ses-{session_id}_FLAIR.nii.gz")
+            save_path = os.path.join(save_location, f"{subject_id2}", f"ses-{session_id}", "anat", f"{subject_id2}_ses-{session_id}_FLAIR.nii.gz")
 
         elif 'msk' in img_paths[i]:
-            save_path = os.path.join(save_location, "derivatives", f"{subject_id}", f"ses-{session_id}", f"{subject_id}_ses-{session_id}_msk.nii.gz")
+            save_path = os.path.join(save_location, "derivatives", f"{subject_id2}", f"ses-{session_id}", f"{subject_id2}_ses-{session_id}_msk.nii.gz")
 
         else:
-            print(f"Warning: NIfTI {parameters[i]} file not found for subject {subject_id} and session {session_id}. Skipping.")
+            print(f"Warning: NIfTI {parameters[i]} file not found for subject {subject_id2} and session {session_id}. Skipping.")
             return None
 
         os.makedirs(os.path.dirname(save_path), exist_ok=True)

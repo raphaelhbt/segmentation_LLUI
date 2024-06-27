@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from torchviz import make_dot
 from torch.utils.tensorboard import SummaryWriter
-
+from torchsummary import summary
 class ConvBlock(nn.Module):
     def __init__(self, in_channels, out_channels):
         super(ConvBlock, self).__init__()
@@ -94,15 +94,6 @@ class UNet3D(nn.Module):
         x = self.sigmoid(x)
         return x
 
-# Création du modèle
-#net = UNet3D(in_channels=1, out_channels=2)
- 
-# Création d'un writer pour TensorBoard
-#writer = SummaryWriter('runs/unet3d_experiment_1')
- 
-# Création d'un tenseur de données d'entrée factice
-#images = torch.randn(1, 1, 128, 128, 128)
- 
-# Ajout du modèle au writer de TensorBoard
-#writer.add_graph(net, images)
-#writer.close()
+#device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+#model = UNet3D(3, 1).to(device)
+#summary(model, (3, 128, 128, 128))

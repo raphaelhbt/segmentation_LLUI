@@ -53,7 +53,6 @@ def bias_field_correction(img_paths, template_address):
     corrected_paths.append(img_paths[-1])
     return corrected_paths
 
-
 def registration(img_paths, template_address):
     template = ants.image_read(template_address)
     registered_paths = []
@@ -92,26 +91,58 @@ def registration(img_paths, template_address):
     ants.image_write(registered_img_resampled, new_img_path)
     registered_paths.append(new_img_path)
 
+    # MASK to have 0 when out of the brain and not really small values (due to the interpolation)
+    new_mask=create_mask(img_paths[2], output_path='/home/user/Documents/raph/temporary/ISLES_temp/mask4registration.nii.gz')
+    registration_mask4registration2DWI = ants.registration(fixed=ants.image_read(img_paths[2]), moving=ants.image_read(new_mask), type_of_transform='Rigid', interpolator='nearestNeighbor')
+    registered_mask4registration2DWI = registration_mask4registration2DWI['warpedmovout']
+    registered_mask4registration = ants.apply_transforms(fixed=template, moving=registered_mask4registration2DWI, transformlist=registration_DWI['fwdtransforms'], interpolator='nearestNeighbor')
+
     # Reorder paths and images to maintain the original order
     registered_paths[0], registered_paths[1] = registered_paths[1], registered_paths[0]
 
+    for i in range(len(registered_paths)):
+        registered_clean = registered_mask4registration * ants.image_read(registered_paths[i])
+        registered_clean.plot()
+        ants.image_write(registered_clean, registered_paths[i]) 
+
     return registered_paths
 
+def create_mask(image_path, output_path):
+    image = ants.image_read(image_path)
+    bool_mask = image.numpy() > 0
+    masked_image_array = np.where(bool_mask, 1, 0).astype('float32')
+    masked_image = ants.from_numpy(masked_image_array, origin=image.origin, spacing=image.spacing, direction=image.direction)
+    ants.image_write(masked_image, output_path)
+    return output_path
+
 def zscore_normalisation(img_paths):
-    normalized_paths = []
-    for img_path in img_paths[:-1]: 
+    new_img_paths = []
+    for img_path in img_paths[:-1]:  # Exclude the mask
         new_path = img_path.replace('registered.nii.gz', 'zscore.nii.gz')
+        new_img_paths.append(new_path)
         img = ants.image_read(img_path)
         img_np = img.numpy()
 
-        mean = img_np.mean()
-        std = img_np.std()
+        # Calculate mean and standard deviation for the >0 values
+        mask=np.where(img_np>0)
 
-        normalized_img_np = (img_np - mean) / std
+        mean = img_np[mask].mean()
+        std = img_np[mask].std()
+
+        # Initialize a copy of the image for normalized values
+        normalized_img_np = np.zeros_like(img_np)
+
+        # Perform z-score normalization only on >0 values
+        normalized_img_np[mask] = (img_np[mask] - mean) / max(std, 1e-8)
+
+        # Create an ANTs image from the normalized numpy array
         normalized_img = ants.from_numpy(normalized_img_np, spacing=img.spacing, origin=img.origin, direction=img.direction)
+
+        # Write the normalized image to the new path
         ants.image_write(normalized_img, new_path)
-        normalized_paths.append(new_path)
-    return normalized_paths
+
+    new_img_paths.append(img_paths[-1])  # Add the mask to the list
+    return new_img_paths
 
 def get_patient_ids(file_path):
     with open(file_path, 'r') as file:

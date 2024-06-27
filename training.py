@@ -5,7 +5,8 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset, SubsetRandomSampler
 import ants
 import numpy as np
-import UNet_model as unet
+#import UNet_model as unet
+import UNet_modelv2 as unet2
 from scipy.ndimage import gaussian_filter, zoom
 from skimage.transform import rotate, resize
 from torchvision import transforms
@@ -30,7 +31,9 @@ random.seed(0)  # Set seed for random module
 
 # Set parameters
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-model = unet.UNet3D(in_channels=3, out_channels=1).to(DEVICE)  # Adjust in_channels for 3 input modalities
+model = unet2.UNet3D(in_channels=3, out_channels=1).to(DEVICE)  # Adjust in_channels for 3 input modalities
+init_weights = unet2.InitWeights_He() # Initialize weights with He initialization
+model.apply(init_weights) # Apply the initialization
 ORIGINAL_SIZE = [182, 218, 182]
 NUM_EPOCHS = 100
 INITIAL_LEARNING_RATE = 1e-2
@@ -301,7 +304,7 @@ class BidsDataset(Dataset):
         FLAIR_patches = torch.tensor(FLAIR_patches, dtype=torch.float32)
         adc_patches = torch.tensor(adc_patches, dtype=torch.float32)
         dwi_patches = torch.tensor(dwi_patches, dtype=torch.float32)
-
+        
         concatenated_data_list = []
         # Concatenate the modalities
         for j in range(len(FLAIR_patches)):
@@ -390,14 +393,14 @@ class BCEDiceLoss(nn.Module):
         return loss, dice_score, bce
     
 transform = transforms.Compose([
-    RandomRotateScale(),
-    RandomGaussianNoise(),
-    RandomGaussianBlur(),
-    RandomBrightness(),
-    RandomContrast(),
-    RandomLowResolution(),
-    RandomGamma(), 
-    RandomMirror(),
+    #RandomRotateScale(),
+    #RandomGaussianNoise(),
+    #RandomGaussianBlur(),
+    #RandomBrightness(),
+    #RandomContrast(),
+    #RandomLowResolution(),
+    #RandomGamma(), 
+    #RandomMirror(),
 ])
 
 # Initialize loss function
@@ -500,6 +503,8 @@ for epoch in range(NUM_EPOCHS):
                 scores = scores.squeeze()
                 predictions_flat.append(scores.cpu())
                 del scores, concatenated_data
+                torch.cuda.empty_cache()
+                gc.collect()
 
             predictions_flat = torch.stack(predictions_flat).numpy()
             predictions_flat = np.transpose(predictions_flat, (1, 0, 2, 3, 4))
