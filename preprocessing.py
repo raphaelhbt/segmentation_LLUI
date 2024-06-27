@@ -194,9 +194,12 @@ def save_images(subject_id, session_id, parameters, save_location, img_paths):
     
     for i in range(len(img_paths)):
         
-        if 'dwi' in img_paths[i] or 'adc' in img_paths[i]:
+        if 'dwi' in img_paths[i]:
             save_path = os.path.join(save_location, f"{subject_id2}", f"ses-{session_id}", "dwi", f"{subject_id2}_ses-{session_id}_{parameters[i]}.nii.gz")
 
+        elif 'adc' in img_paths[i]:
+            save_path = os.path.join(save_location, f"{subject_id2}", f"ses-{session_id}", "dwi", f"{subject_id2}_ses-{session_id}_ADC.nii.gz")
+        
         elif 'FLAIR' in img_paths[i]:
             save_path = os.path.join(save_location, f"{subject_id2}", f"ses-{session_id}", "anat", f"{subject_id2}_ses-{session_id}_FLAIR.nii.gz")
 

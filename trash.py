@@ -2,26 +2,23 @@ import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, Dataset, SubsetRandomSampler
+from torch.utils.data import DataLoader, Dataset, SubsetRandomSampler, random_split
 import ants
 import numpy as np
 #import UNet_model as unet
 import UNet_modelv2 as unet2
 from scipy.ndimage import gaussian_filter, zoom
-from skimage.transform import rotate, resize
+from skimage.transform import resize
 from torchvision import transforms
 import random
-from torch.utils.data import random_split
 from torch.utils.tensorboard import SummaryWriter  
 import shutil
 import patchify as pt
 from scipy.ndimage import rotate, zoom
-from skimage.transform import resize
-import random
-import numpy as np
 import gc
 from time import time
 from torch.optim.lr_scheduler import PolynomialLR
+import torchio as tio
 
 
 # Set seed for reproducibility
@@ -55,76 +52,30 @@ class RandomRotateScale:
         self.scale_prob = scale_prob
         self.both_prob = both_prob
 
-    def rotate_3d(self, img, angle_x, angle_y, angle_z):
-        # Rotate around x-axis
-        for i in range(img.shape[1]):
-            img[:, i, :] = rotate(img[:, i, :], angle_x, reshape=False, mode='reflect')
-        # Rotate around y-axis
-        for i in range(img.shape[0]):
-            img[i, :, :] = rotate(img[i, :, :], angle_y, reshape=False, mode='reflect')
-        # Rotate around z-axis
-        for i in range(img.shape[2]):
-            img[:, :, i] = rotate(img[:, :, i], angle_z, reshape=False, mode='reflect')
-        return img
-
-    def scale(self, image):
-        # Generate a random scale parameter
-        scale = np.random.uniform(0.7, 1.4)
-
-        # Scale the image
-        scaled_image = zoom(image, scale)
-
-        # Initialize an empty array with the original image size
-        output_image = np.zeros_like(image)
-
-        # If the scaled image is larger than the original image, crop it
-        if scale > 1:
-            start_x = (scaled_image.shape[0] - image.shape[0]) // 2
-            start_y = (scaled_image.shape[1] - image.shape[1]) // 2
-            start_z = (scaled_image.shape[2] - image.shape[2]) // 2
-
-            output_image = scaled_image[
-                start_x:start_x + image.shape[0],
-                start_y:start_y + image.shape[1],
-                start_z:start_z + image.shape[2]
-            ]
-        # If the scaled image is smaller than the original image, pad it
-        else:
-            pad_x = (image.shape[0] - scaled_image.shape[0]) // 2
-            pad_y = (image.shape[1] - scaled_image.shape[1]) // 2
-            pad_z = (image.shape[2] - scaled_image.shape[2]) // 2
-
-            output_image[
-                pad_x:pad_x + scaled_image.shape[0],
-                pad_y:pad_y + scaled_image.shape[1],
-                pad_z:pad_z + scaled_image.shape[2]
-            ] = scaled_image
-        gc.collect()  
-        return output_image
-
     def __call__(self, sample):
-        if not isinstance(sample, list):
-            raise TypeError("Sample must be a list or iterable.")
-        
+
         do_rotate = random.random() < self.rotate_prob
         do_scale = random.random() < self.scale_prob
         do_both = random.random() < self.both_prob
+        transformed_sample = []
+        for i in range(len(sample)):
+            sample[i] = torch.from_numpy(sample[i]).unsqueeze(0)
+            sample[i] = tio.ScalarImage(tensor=sample[i])
 
-        if do_rotate or do_both:
-            angle_x = random.uniform(-30, 30)
-            angle_y = random.uniform(-30, 30)
-            angle_z = random.uniform(-30, 30)
+            degrees = (-30, 30, -30, 30, -30, 30)
+            scales = (0.7, 1.4, 0.7, 1.4, 0.7, 1.4)
 
-            for i in range(len(sample)):
-                sample[i] = self.rotate_3d(sample[i], angle_x, angle_y, angle_z)
 
-        if do_scale or do_both:
-            for i in range(len(sample)):
-                img = sample[i]
-                # Resize image
-                sample[i] = self.scale(img)
+            transform = tio.RandomAffine(
+                scales=scales if do_scale or do_both else 1,
+                degrees=degrees if do_rotate or do_both else 0,  # Use a tuple representing the range for degrees
+                default_pad_value=0,  # Use 0 to fill the background with zeros
+            )
 
-        return sample
+            # Apply the transform
+            transformed_sample.append(transform(sample[i]))
+            transformed_sample[i] = transformed_sample[i].numpy().squeeze()
+        return transformed_sample
 
 class RandomGaussianNoise:
     '''prob=0.15, generates a gausian blur with variance = random.uniform(0, 0.1) and mean = 0'''
@@ -274,7 +225,7 @@ class BidsDataset(Dataset):
         adc_path = os.path.join(self.bids_dir, subject, "ses-0001", "dwi", f"{subject}_ses-0001_ADC.nii.gz")
         dwi_path = os.path.join(self.bids_dir, subject, "ses-0001", "dwi", f"{subject}_ses-0001_dwi.nii.gz")
         mask_path = os.path.join(self.bids_dir, "derivatives", subject, "ses-0001", f"{subject}_ses-0001_msk.nii.gz")
-
+        
         # Check if files exist
         if not all(os.path.exists(path) for path in [FLAIR_path, adc_path, dwi_path, mask_path]):
             raise FileNotFoundError("One or more files do not exist")
@@ -393,7 +344,7 @@ class BCEDiceLoss(nn.Module):
         return loss, dice_score, bce
     
 transform = transforms.Compose([
-    #RandomRotateScale(),
+    RandomRotateScale(),
     #RandomGaussianNoise(),
     #RandomGaussianBlur(),
     #RandomBrightness(),

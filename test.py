@@ -1,35 +1,15 @@
-import ants
-import torchio as tio
-import random
-import numpy as np
-import torch
+import os
 
-image_path = r'/home/user/Documents/raph/preprocessed_datasets/ISLES2022/sub-1/ses-0001/anat/sub-1_ses-0001_FLAIR.nii.gz'
+def replace_adc_with_ADC(directory_path):
+    for root, dirs, files in os.walk(directory_path):
+        for file_name in files:
+            if 'adc' in file_name:
+                new_name = file_name.replace('adc', 'ADC')
+                old_file = os.path.join(root, file_name)
+                new_file = os.path.join(root, new_name)
+                os.rename(old_file, new_file)
+                print(f'Renamed: {old_file} to {new_file}')
 
-# Load the image with ants
-image = ants.image_read(image_path)
-
-# Convert the ants image to a numpy array
-image_np = image.numpy()
-image_tensor = torch.from_numpy(image_np).unsqueeze(0)
-# Convert the torch tensor to a torchio ScalarImage
-image_tio = tio.ScalarImage(tensor=image_tensor)
-
-degrees = (-30, 30, -30, 30, -30, 30)
-scales = (0.7, 1.4, 0.7, 1.4, 0.7, 1.4)
-
-transform = tio.RandomAffine(
-    scales=scales,
-    degrees=degrees,  # Use a tuple representing the range for degrees
-    default_pad_value=0,  # Use 0 to fill the background with zeros
-)
-
-# Apply the transformation to the torchio image
-transformed = transform(image_tio)
-
-# Convert the transformed torchio image back to an ants image for plotting
-transformed_np = transformed.numpy().squeeze()
-print(transformed_np.shape)
-transformed_ants = ants.from_numpy(transformed_np)
-
-ants.image_write(transformed_ants, 'transformed_image.nii.gz')
+# Example usage
+bids_dir = "/home/user/Documents/raph/preprocessed_datasets/ISLES2022"
+replace_adc_with_ADC(bids_dir)
