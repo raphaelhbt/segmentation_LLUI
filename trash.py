@@ -6,7 +6,8 @@ from torch.utils.data import DataLoader, Dataset, SubsetRandomSampler, random_sp
 import ants
 import numpy as np
 #import UNet_model as unet
-import UNet_modelv2 as unet2
+#import UNet_modelv2 as unet2
+import UNet_model_monai as unet3
 from scipy.ndimage import gaussian_filter, zoom
 from skimage.transform import resize
 from torchvision import transforms
@@ -26,11 +27,33 @@ torch.manual_seed(0)
 torch.cuda.manual_seed_all(0)
 random.seed(0)  # Set seed for random module
 
+# Model parameters
+spatial_dims = 3
+in_channels = 3
+out_channels = 1
+kernel_size = [[3, 3, 3], [3, 3, 3], [3, 3, 3], [3, 3, 3], [3, 3, 3]]
+strides = [[1, 1, 1], [2, 2, 2], [2, 2, 2], [2, 2, 2], [2, 2, 2]]
+up_sample_kernel_size = strides[1:]
+filters = [32, 64, 128, 256, 320]
+# default params
+# - norm_name: instance
+# - act_name: leaky relu (negative_slope 0.01)
+# - dropout: None # change to 0.2 for example (=dropout rate in every layer)
+dropout = None
+
 # Set parameters
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-model = unet2.UNet3D(in_channels=3, out_channels=1).to(DEVICE)  # Adjust in_channels for 3 input modalities
-init_weights = unet2.InitWeights_He() # Initialize weights with He initialization
-model.apply(init_weights) # Apply the initialization
+model = unet3.DynUNet(
+    spatial_dims=spatial_dims,
+    in_channels=in_channels,
+    out_channels=out_channels,
+    kernel_size=kernel_size,
+    strides=strides,
+    upsample_kernel_size=up_sample_kernel_size,
+    filters=filters,
+    dropout = dropout
+    ).to(DEVICE)  # Adjust in_channels for 3 input modalities
+
 ORIGINAL_SIZE = [182, 218, 182]
 NUM_EPOCHS = 100
 INITIAL_LEARNING_RATE = 1e-2
@@ -44,156 +67,165 @@ power = 0.9
 log_dir = 'runs/UNet3D_experiment_1'
 writer = SummaryWriter(log_dir)
 
-class RandomRotateScale:
-    '''Rotate with prob=0.16, scale with prob 0.16 and both with prob 0.08. Rotation following each axis with each angle=random.uniform(-30, 30). 
-    Scale = np.random.uniform(0.7, 1.4), if<1 then scaling and then padding to original size, else scaling and then cropping.'''
-    def __init__(self, rotate_prob=0.16, scale_prob=0.16, both_prob=0.08):
-        self.rotate_prob = rotate_prob
-        self.scale_prob = scale_prob
-        self.both_prob = both_prob
+def RandomRotateScale(list_of_images):
+    transform = tio.OneOf({
+        tio.RandomAffine(
+            scales=(0.7, 1.4),
+            degrees=(-30, 30, -30, 30, -30, 30),
+            isotropic=True,
+            default_pad_value=0,
+            p=0.08
+        ),
+        tio.RandomAffine(
+            scales=(0.7, 1.4),
+            isotropic=True,
+            default_pad_value=0,
+            p=0.16
+        ),
+        tio.RandomAffine(
+            degrees=(-30, 30, -30, 30, -30, 30),
+            isotropic=True,
+            default_pad_value=0,
+            p=0.16
+        ),
+    }, p=1.0)
 
-    def __call__(self, sample):
+    transformed = []
+    for img in list_of_images:
+        img = tio.ScalarImage(tensor=torch.tensor(img).unsqueeze(0))
+        transformed_img = transform(img)
+        transformed.append(transformed_img.numpy().squeeze(0))
+    return transformed
 
-        do_rotate = random.random() < self.rotate_prob
-        do_scale = random.random() < self.scale_prob
-        do_both = random.random() < self.both_prob
-        transformed_sample = []
-        for i in range(len(sample)):
-            sample[i] = torch.from_numpy(sample[i]).unsqueeze(0)
-            sample[i] = tio.ScalarImage(tensor=sample[i])
-
-            degrees = (-30, 30, -30, 30, -30, 30)
-            scales = (0.7, 1.4, 0.7, 1.4, 0.7, 1.4)
-
-
-            transform = tio.RandomAffine(
-                scales=scales if do_scale or do_both else 1,
-                degrees=degrees if do_rotate or do_both else 0,  # Use a tuple representing the range for degrees
-                default_pad_value=0,  # Use 0 to fill the background with zeros
+def RandomGaussianNoise(list_of_images):
+    transform = tio.RandomNoise(
+                mean=0, 
+                std=(0, 0.1), 
+                p=0.15
             )
+    
+    transformed = []
+    for img in list_of_images:
+        # Ensure the tensor has a specified dtype that matches the original image's dtype
+        tensor_img = torch.tensor(img, dtype=torch.float32).unsqueeze(0)
+        img = tio.ScalarImage(tensor=tensor_img)
+        transformed_img = transform(img)
+        # Convert transformed_img back to the expected format if necessary
+        transformed.append(transformed_img.numpy().squeeze(0))
+    return transformed
 
-            # Apply the transform
-            transformed_sample.append(transform(sample[i]))
-            transformed_sample[i] = transformed_sample[i].numpy().squeeze()
+def RandomGaussianBlur(list_of_images):
+    sample_prob=0.15
+    do_blur = random.random() < sample_prob
+
+    if do_blur:
+        transformed_sample = []
+        for img in list_of_images:
+            kernel_width = random.uniform(0.5, 1.5)
+            transform = tio.RandomBlur(
+                std=(kernel_width, kernel_width),
+                p=0.5
+            )
+            img = tio.ScalarImage(tensor=torch.tensor(img).unsqueeze(0))
+            transformed_sample.append(transform(img).numpy().squeeze(0))
         return transformed_sample
+    else:
+        return list_of_images
 
-class RandomGaussianNoise:
-    '''prob=0.15, generates a gausian blur with variance = random.uniform(0, 0.1) and mean = 0'''
-    def __init__(self, prob=0.15):
-        self.prob = prob
+def RandomBrightness(list_of_images):
+    factor = random.uniform(0.7, 1.3)
+    transformed_sample = []
+    if random.random() < 0.15:
+        for img in list_of_images:
+            transformed_sample.append((img * factor))      
+    return list_of_images
 
-    def __call__(self, sample):
-        if random.random() < self.prob:
-            for i in range(len(sample)):
-                variance = random.uniform(0, 0.1)
-                noise = np.random.normal(0, variance, sample[i].shape)
-                sample[i] = sample[i] + noise
-        return sample
+def RandomContrast(list_of_images):
+    factor = random.uniform(0.7, 1.3)
+    transformed_sample = []
+    if random.random() < 0.15:
+        for i in range(len(list_of_images)):
+            transformed_sample.append((list_of_images[i] * factor)) 
+            list_of_images[i] = np.clip(list_of_images[i], list_of_images[i].min(), list_of_images[i].max())
+    return list_of_images
+ 
+def RandomLowResolution(list_of_images):
+    sample_prob = 0.25
+    modality_prob = 0.5
+    do_low_res = random.random() < sample_prob
 
-class RandomGaussianBlur:
-    '''prob of 0.2. If it happens for one modality then prob of 0.5 that it also happens to the other modalities of the same patient.  
-    sigma = random.uniform(0.5, 1.5) and sample[j] = gaussian_filter(sample[j], sigma).'''
-    def __init__(self, sample_prob=0.2, modality_prob=0.5):
-        self.sample_prob = sample_prob
-        self.modality_prob = modality_prob
+    if do_low_res:
+        transformed_sample = []
+        factor = random.uniform(1, 2)
+        for i in range(len(list_of_images)):
+            do_modality = random.random() < modality_prob
+            if do_modality:
+                original_image = list_of_images[i]
+                original_shape = original_image.shape
 
-    def __call__(self, sample):
-        do_blur = random.random() < self.sample_prob
+                # Convert to TorchIO ScalarImage
+                image_tio = tio.ScalarImage(tensor=torch.tensor(original_image).unsqueeze(0))
 
-        for j in range(len(sample)):
-            if do_blur:
-                sigma = random.uniform(0.5, 1.5)
-                sample[j] = gaussian_filter(sample[j], sigma)
-                for i in range(len(sample)):
-                    if random.random() < self.modality_prob and i != j:
-                        sigma = random.uniform(0.5, 1.5)
-                        sample[i] = gaussian_filter(sample[i], sigma)
-                break  # Exit the loop after the iteration of j when do_blur is True
-                
-        return sample
+                # Downsample
+                resample_transform = tio.Resample(
+                    target=(factor, factor, factor),
+                    image_interpolation='nearest',  # nearest neighbor for downsampling
+                )
+                downsampled = resample_transform(image_tio)
 
-class RandomBrightness:
-    '''prob=0.15, factor = random.uniform(0.7, 1.3) and then values multiplied by factor.'''
-    def __init__(self, prob=0.15):
-        self.prob = prob
+                # Ensure the final shape matches the original using CropOrPad
+                final_image = tio.CropOrPad(target_shape=original_shape)(downsampled)
+                final_numpy_array = final_image.tensor.numpy().squeeze()
+                transformed_sample.append(final_numpy_array)
+            else:
+                transformed_sample.append(list_of_images[i])
+        return transformed_sample
+    else:
+        return list_of_images
 
-    def __call__(self, sample):
-        if random.random() < self.prob:
-            factor = random.uniform(0.7, 1.3)
-            for i in range(len(sample)):
-                sample[i] = sample[i] * factor
-        return sample
+def RandomGamma(list_of_images):
+    prob=0.15
+    prob_prior_transform = 0.15
 
-class RandomContrast:
-    '''prob=0.15, factor = random.uniform(0.65, 1.5) then multiplication between factor and original values, finally, values are clipped between min and max of the original image.'''
-    def __init__(self, prob=0.15):
-        self.prob = prob
+    do_it = random.random() < prob
+    do_it_prior_transform = random.random() < prob_prior_transform
 
-    def __call__(self, sample):
-        new_sample = sample
-        if random.random() < self.prob:
-            factor = random.uniform(0.65, 1.5)
-            new_sample = []
-            for i in range(len(sample)):
-                new_sample.append(sample[i] * factor)
-                new_sample[i] = np.clip(new_sample[i], sample[i].min(), sample[i].max())
-        return new_sample
+    if do_it:
+        transform=tio.RandomGamma(
+            log_gamma=(0.7, 1.5),
+        )
+        for i in range(len(list_of_images)):
+            list_of_images[i] = torch.tensor(list_of_images[i]).unsqueeze(0)
 
-class RandomLowResolution:
-    '''prob=0.25, if happens for one modality then prob of 0.5 that happens to the others of the patient. factor = random.uniform(1, 2)    
-    downsampled = zoom(sample[j], 1 / factor, order=0) and then resizing to original size'''
-    def __init__(self, sample_prob=0.25, modality_prob=0.5):
-        self.sample_prob = sample_prob
-        self.modality_prob = modality_prob
+            #Normalize image to [0,1]
+            img_min, img_max = list_of_images[i].min(), list_of_images[i].max()
+            list_of_images[i] = (list_of_images[i] - img_min) / (img_max - img_min)
 
-    def __call__(self, sample):
-        for j in range(len(sample)):
-            if random.random() < self.sample_prob:
-                factor = random.uniform(1, 2)
-                downsampled = zoom(sample[j], 1 / factor, order=0)
-                sample[j] = resize(downsampled, sample[j].shape, order=3, mode='reflect', anti_aliasing=True)
-                 
-                for i in range(len(sample)):
-                    if random.random() < self.modality_prob and i != j:
-                        factor = random.uniform(1, 2)
-                        downsampled = zoom(sample[i], 1 / factor, order=0)
-                        sample[i] = resize(downsampled, sample[i].shape, order=3, mode='reflect', anti_aliasing=True)
-                break  # Exit the loop after the iteration of j when do_blur is True
-                
-        return sample
+            if do_it_prior_transform:
+                list_of_images[i] = 1 - transform(1 - list_of_images[i])
 
-class RandomGamma:
-    '''prob=0.15, intensity is normalized, non linear intensity transformation i_new=i_old**g with g=random.uniform(0.7, 1.5) and then voxel intensity is scaled back to their original value range. 
-    Also prob2=0.15 and if it is triggered then voxel intensities being inverted prior to transformation with sample[i] = 1 - ((1 - sample[i]) ** g)'''
-    def __init__(self, prob=0.15, prob2=0.15):
-        self.prob = prob
-        self.prob2 = prob2
+            list_of_images[i] = transform(list_of_images[i])
 
-    def __call__(self, sample):
-        if random.random() < self.prob:
-            g = random.uniform(0.7, 1.5)
-            for i in range(len(sample)):
-                min_val, max_val = np.min(sample[i]), np.max(sample[i])
-                sample[i] = (sample[i] - min_val) / (max_val - min_val + 1e-6)
-                if random.random() < self.prob2:
-                    sample[i] = 1 - (1 - sample[i]) ** g
-                sample[i] = sample[i] ** g
-                sample[i] = (sample[i] * (max_val - min_val)) + min_val
-        return sample
+            # Scale back to original value range
+            list_of_images[i] = list_of_images[i] * (img_max - img_min) + img_min
+            list_of_images[i] = list_of_images[i].numpy().squeeze(0)
 
-class RandomMirror:
-    '''prob=0.5, if triggered, all patches are mirrored'''
-    def __init__(self):
-        self.prob = 0.5
+    return list_of_images
 
-    def __call__(self, sample):
-        if random.random() < self.prob:
-            axes = [0, 1, 2]
-            for i in range(len(sample)):
-                for axis in axes:
-                    if random.random() < self.prob:
-                        sample[i] = np.flip(sample[i], axis=axis).copy()
-        return sample
+def RandomMirror(list_of_images):
+    # Initialize the transformation
+    transform = tio.RandomFlip(axes=(0, 1, 2), p=0.5)
+    
+    # Apply the same transformation to all images
+    transformed_images = []
+    for img in list_of_images:
+        img_tensor = torch.tensor(img).unsqueeze(0)  
+        torch.manual_seed(0)  
+        transformed_tensor = transform(img_tensor)  
+        transformed_np = transformed_tensor.squeeze(0).numpy()  
+        transformed_images.append(transformed_np)
+        
+    return transformed_images
     
 # BIDS Dataset Loader
 class BidsDataset(Dataset):
@@ -344,15 +376,15 @@ class BCEDiceLoss(nn.Module):
         return loss, dice_score, bce
     
 transform = transforms.Compose([
-    RandomRotateScale(),
-    #RandomGaussianNoise(),
-    #RandomGaussianBlur(),
-    #RandomBrightness(),
-    #RandomContrast(),
-    #RandomLowResolution(),
-    #RandomGamma(), 
-    #RandomMirror(),
-])
+    lambda data: RandomRotateScale(data),
+    lambda data: RandomGaussianNoise(data),
+    lambda data: RandomGaussianBlur(data),
+    lambda data: RandomBrightness(data),
+    lambda data: RandomContrast(data),
+    lambda data: RandomLowResolution(data),
+    lambda data: RandomGamma(data),
+    lambda data: RandomMirror(data)
+    ])
 
 # Initialize loss function
 criterion = BCEDiceLoss()
@@ -360,11 +392,12 @@ criterion = BCEDiceLoss()
 # Initialize Dataset and DataLoader
 bids_dir = "/home/user/Documents/raph/preprocessed_datasets/ISLES2022"
 dataset = BidsDataset(bids_dir, transform=transform, patch_size=PATCH_SIZE, step_size=STEP_SIZE)
- 
-train_size = int(0.8 * len(dataset)) #200
-val_size = len(dataset) - train_size #50
-train_indices, val_indices = random_split(range(len(dataset)), [train_size, val_size])
- 
+
+test_size = 50
+train_size = int(0.8 * len(dataset) - test_size) #160
+val_size = len(dataset) - train_size - test_size #50
+
+train_indices, val_indices, test_indices = random_split(range(len(dataset)), [train_size, val_size, test_size])
 train_dataset = BidsDataset(bids_dir, transform=transform, patch_size=PATCH_SIZE, step_size=STEP_SIZE)
 val_dataset = BidsDataset(bids_dir, transform=None, patch_size=PATCH_SIZE, step_size=STEP_SIZE)
  
@@ -391,6 +424,9 @@ for epoch in range(NUM_EPOCHS):
             # Forward pass with mixed precision
             scores = model(concatenated_data)
             
+            # Normalise the scores
+            scores = torch.sigmoid(scores)
+
             # Flatten predictions and targets
             predictions_flat = scores.squeeze()
             targets_flat = targets[:, j].squeeze()
@@ -451,6 +487,10 @@ for epoch in range(NUM_EPOCHS):
 
                 # Forward pass
                 scores = model(concatenated_data)
+
+                # Normalise the scores
+                scores = torch.sigmoid(scores)
+
                 scores = scores.squeeze()
                 predictions_flat.append(scores.cpu())
                 del scores, concatenated_data
