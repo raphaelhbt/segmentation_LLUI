@@ -4,11 +4,17 @@ import pandas as pd
 import ants
 import numpy as np
 
-# On titouan's workstation do source ~/.bash_profile before running the script
+# WORKS ONLY ON THE ISLES 2022 DATASET
+# This script performs the following preprocessing steps on the SOOP dataset:
+# 1. Brain extraction using FSL's BET
+# 2. Bias field correction using ANTs
+# 3. Registration to MNI152 template using ANTs
+# 4. Z-score intensity normalization
+# 5. Save preprocessed images to a new directory
 
 # Paths definitions
 # Path to the ISLES 2022 dataset and the preprocessed directory. Be careful it only works on the workstation !!!
-bids_dir_WS = r"/home/user/Documents/raph/raw_datasets/ISLES-2022"
+bids_dir_WS = r"/home/user/Documents/raph/raw_datasets/ISLES-2022" # ISLES DATASET
 preprocessed_dir_WS = r"/home/user/Documents/raph/preprocessed_datasets/ISLES2022"
 
 # Path to the template image used for registration
@@ -25,6 +31,19 @@ choice_brain_extraction = input("Do you want to perform the brain extraction ? (
 
 # FUNCTIONS DEFINITIONS
 def brain_extraction(bids_dir, parameters, temp_save_location, subject_id, session_id):
+    """
+    Perform brain extraction on the input images.
+
+    Arguments:
+        bids_dir (str): The path to the BIDS directory.
+        parameters (list): A list of the parameters to be extracted.
+        temp_save_location (str): The path to the temporary directory where the preprocessed images will be saved.
+        subject_id (str): The ID of the subject.
+        session_id (str): The ID of the session.
+
+    Returns:
+        list: A list containing the paths of the output images.
+    """
 
     # Retrieve the paths of the images
     img_paths= retrieve_img_paths(bids_dir, parameters, subject_id, session_id)
@@ -39,6 +58,15 @@ def brain_extraction(bids_dir, parameters, temp_save_location, subject_id, sessi
     return out_paths
 
 def bias_field_correction(img_paths):
+    """
+    Perform N4 bias field correction on the input images.
+
+    Arguments:
+        img_paths (list): A list containing the paths of the input images.
+
+    Returns:
+        list: A list containing the paths of the corrected images.
+    """
     new_img_paths = []
     for i in range(len(img_paths)-1): # Skip the mask
         new_img_paths.append(img_paths[i].replace('brainExtracted.nii.gz', 'corrected.nii.gz'))
@@ -49,6 +77,16 @@ def bias_field_correction(img_paths):
     return new_img_paths
 
 def registration(img_paths, template_address):
+    """
+    Perform registration of the input images to the template image.
+
+    Arguments:
+        img_paths (list): A list containing the paths of the input images.
+        template_address (str): The path to the template image.
+
+    Returns:
+        list: A list containing the paths of the registered images.
+    """
     new_img_paths = []
     registered_img = []
     template = ants.image_read(template_address)
@@ -95,6 +133,16 @@ def registration(img_paths, template_address):
     return new_img_paths
 
 def create_mask(image_path, output_path):
+    """
+    Create a binary mask from the input image.
+
+    Arguments:
+        image_path (str): The path to the input image.
+        output_path (str): The path to the output mask.
+    
+    Returns:
+        str: The path to the output mask.
+    """
     image = ants.image_read(image_path)
     bool_mask = image.numpy() > 0
     masked_image_array = np.where(bool_mask, 1, 0).astype('float32')
@@ -103,6 +151,15 @@ def create_mask(image_path, output_path):
     return output_path
 
 def zscore_normalisation(img_paths):
+    """
+    Perform z-score normalization on the input images. Only the >0 values are normalized so that the background remains 0.
+
+    Arguments:
+        img_paths (list): A list containing the paths of the input images.
+
+    Returns:
+        list: A list containing the paths of the normalized images.
+    """
     new_img_paths = []
     for img_path in img_paths[:-1]:  # Exclude the mask
         new_path = img_path.replace('registered.nii.gz', 'zscore.nii.gz')
@@ -131,7 +188,6 @@ def zscore_normalisation(img_paths):
     new_img_paths.append(img_paths[-1])  # Add the mask to the list
     return new_img_paths
 
-
 #Helpers functions
 def get_patient_ids(file_path):
     """
@@ -153,6 +209,18 @@ def get_patient_ids(file_path):
     return patient_ids
 
 def retrieve_img_paths(bids_dir, parameters, subject_id, session_id):
+    """
+    Retrieve the paths of the input images from the BIDS directory.
+
+    Arguments:
+        bids_dir (str): The path to the BIDS directory.
+        parameters (list): A list of the parameters to be extracted.
+        subject_id (str): The ID of the subject.
+        session_id (str): The ID of the session.
+
+    Returns:
+        list: A list containing the paths of the input images.
+    """
     img_paths = []
 
     for parameter in parameters:
@@ -178,6 +246,19 @@ def retrieve_img_paths(bids_dir, parameters, subject_id, session_id):
     return img_paths
 
 def retrieve_out_paths(img_paths, temp_save_location, subject_id, session_id, parameters):
+    """
+    Retrieve the paths of the output images from the temporary director where the preprocessed images will be temporarily saved.
+
+    Arguments:
+        img_paths (list): A list containing the paths of the input images.
+        temp_save_location (str): The path to the temporary directory where the preprocessed images will be saved.
+        subject_id (str): The ID of the subject.
+        session_id (str): The ID of the session.
+        parameters (list): A list of the parameters to be extracted.
+    
+    Returns:
+        list: A list containing the paths of the output images.
+    """
     out_paths = []
     os.makedirs(temp_save_location, exist_ok=True)
 
@@ -187,6 +268,16 @@ def retrieve_out_paths(img_paths, temp_save_location, subject_id, session_id, pa
     return out_paths
 
 def save_images(subject_id, session_id, parameters, save_location, img_paths):
+    """
+    Save the preprocessed images to the desired location in the BIDS format.
+
+    Arguments:
+        subject_id (str): The ID of the subject.
+        session_id (str): The ID of the session.
+        parameters (list): A list of the parameters to be extracted.
+        save_location (str): The path to the directory where the preprocessed images will be saved.
+        img_paths (list): A list containing the paths of the preprocessed images.
+    """
     subject_id2 = subject_id
     parts = subject_id2.split("strokecase")  # Split the ID at 'strokecase'
     number_part = int(parts[1])  # Convert the numerical part to an integer to remove leading zeros

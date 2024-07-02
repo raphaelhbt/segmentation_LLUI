@@ -6,6 +6,18 @@ import matplotlib.pyplot as plt
 
 # Function to calculate the Dice score
 def dice(im1, im2, empty_score=1.0):
+    """
+    Computes the Dice coefficient, a measure of set similarity.
+
+    Arguments:
+    im1 : array-like, bool
+    im2 : array-like, bool
+    empty_score : float
+        Value to return if both im1 and im2 are empty.
+    Returns:
+    dice : float
+    Dice coefficient as a float on range [0,1].
+    """
     im1 = np.asarray(im1).astype(bool)
     im2 = np.asarray(im2).astype(bool)
 

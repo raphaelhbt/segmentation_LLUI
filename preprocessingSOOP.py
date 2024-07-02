@@ -7,6 +7,14 @@ import time
 import psutil
 import numpy as np
 
+# WORKS ONLY ON THE SOOP DATASET
+# This script performs the following preprocessing steps on the SOOP dataset:
+# 1. Brain extraction using FSL's BET
+# 2. Bias field correction using ANTs
+# 3. Registration to MNI152 template using ANTs
+# 4. Z-score intensity normalization
+# 5. Save preprocessed images to a new directory
+
 # Paths definitions
 bids_dir_WS = r"/home/user/Documents/raph/raw_datasets/SOOP/ds004889"
 preprocessed_dir_WS = r"/home/user/Documents/raph/preprocessed_datasets/SOOP"
@@ -16,6 +24,19 @@ parameters = ['ADC', 'TRACE', 'FLAIR', 'T1w', 'mask']
 choice_brain_extraction = input("Do you want to perform the brain extraction ? (Y/N) : ")
 
 def brain_extraction(bids_dir, parameters, temp_save_location, subject_id):
+    """
+    Perform brain extraction on the input images.
+
+    Arguments:
+        bids_dir (str): The path to the BIDS directory.
+        parameters (list): A list of the parameters to be extracted.
+        temp_save_location (str): The path to the temporary directory where the preprocessed images will be saved.
+        subject_id (str): The ID of the subject.
+        session_id (str): The ID of the session.
+
+    Returns:
+        list: A list containing the paths of the output images.
+    """
     img_paths = retrieve_img_paths(bids_dir, parameters, subject_id)
     if img_paths is None or len(img_paths) != len(parameters):
         raise ValueError(f"Error retrieving image paths for subject {subject_id}")
@@ -40,6 +61,15 @@ def brain_extraction(bids_dir, parameters, temp_save_location, subject_id):
     return out_paths
 
 def bias_field_correction(img_paths, template_address):
+    """
+    Perform N4 bias field correction on the input images.
+
+    Arguments:
+        img_paths (list): A list containing the paths of the input images.
+
+    Returns:
+        list: A list containing the paths of the corrected images.
+    """
     corrected_paths = []
     for i in range(len(img_paths)-1): 
         if i == 2 or i == 3:
@@ -54,6 +84,16 @@ def bias_field_correction(img_paths, template_address):
     return corrected_paths
 
 def registration(img_paths, template_address):
+    """
+    Perform registration of the input images to the template image.
+
+    Arguments:
+        img_paths (list): A list containing the paths of the input images.
+        template_address (str): The path to the template image.
+
+    Returns:
+        list: A list containing the paths of the registered images.
+    """
     template = ants.image_read(template_address)
     registered_paths = []
 
@@ -108,6 +148,16 @@ def registration(img_paths, template_address):
     return registered_paths
 
 def create_mask(image_path, output_path):
+    """
+    Create a binary mask from the input image.
+
+    Arguments:
+        image_path (str): The path to the input image.
+        output_path (str): The path to the output mask.
+    
+    Returns:
+        str: The path to the output mask.
+    """
     image = ants.image_read(image_path)
     bool_mask = image.numpy() > 0
     masked_image_array = np.where(bool_mask, 1, 0).astype('float32')
@@ -116,6 +166,15 @@ def create_mask(image_path, output_path):
     return output_path
 
 def zscore_normalisation(img_paths):
+    """
+    Perform z-score normalization on the input images. Only the >0 values are normalized so that the background remains 0.
+
+    Arguments:
+        img_paths (list): A list containing the paths of the input images.
+
+    Returns:
+        list: A list containing the paths of the normalized images.
+    """
     new_img_paths = []
     for img_path in img_paths[:-1]:  # Exclude the mask
         new_path = img_path.replace('registered.nii.gz', 'zscore.nii.gz')
@@ -144,13 +203,35 @@ def zscore_normalisation(img_paths):
     new_img_paths.append(img_paths[-1])  # Add the mask to the list
     return new_img_paths
 
+# Helpers functions
 def get_patient_ids(file_path):
+    """
+    Get all patient IDs from a TSV file.
+
+    Parameters:
+        file_path (str): The path to the TSV file containing patient IDs.
+
+    Returns:
+        list: A list containing all patient IDs extracted from the TSV file.
+    """
     with open(file_path, 'r') as file:
         df = pd.read_csv(file, sep='\t')
         patient_ids = df['participant_id'].tolist()
     return patient_ids
 
 def retrieve_img_paths(bids_dir, parameters, subject_id):
+    """
+    Retrieve the paths of the input images from the BIDS directory.
+
+    Arguments:
+        bids_dir (str): The path to the BIDS directory.
+        parameters (list): A list of the parameters to be extracted.
+        subject_id (str): The ID of the subject.
+        session_id (str): The ID of the session.
+
+    Returns:
+        list: A list containing the paths of the input images.
+    """
     img_paths = []
     for parameter in parameters:
         if parameter == 'ADC' or parameter == 'TRACE':
@@ -168,6 +249,19 @@ def retrieve_img_paths(bids_dir, parameters, subject_id):
     return img_paths
 
 def retrieve_out_paths(img_paths, temp_save_location, subject_id, parameters):
+    """
+    Retrieve the paths of the output images from the temporary director where the preprocessed images will be temporarily saved.
+
+    Arguments:
+        img_paths (list): A list containing the paths of the input images.
+        temp_save_location (str): The path to the temporary directory where the preprocessed images will be saved.
+        subject_id (str): The ID of the subject.
+        session_id (str): The ID of the session.
+        parameters (list): A list of the parameters to be extracted.
+    
+    Returns:
+        list: A list containing the paths of the output images.
+    """
     out_paths = []
     os.makedirs(temp_save_location, exist_ok=True)
 
@@ -181,6 +275,16 @@ def retrieve_out_paths(img_paths, temp_save_location, subject_id, parameters):
     return out_paths
 
 def save_images(subject_id, parameters, save_location, img_paths):
+    """
+    Save the preprocessed images to the desired location in the BIDS format.
+
+    Arguments:
+        subject_id (str): The ID of the subject.
+        session_id (str): The ID of the session.
+        parameters (list): A list of the parameters to be extracted.
+        save_location (str): The path to the directory where the preprocessed images will be saved.
+        img_paths (list): A list containing the paths of the preprocessed images.
+    """
     for i in range(len(img_paths)):
         if 'ADC' in parameters[i]:
             save_path = os.path.join(save_location, f"{subject_id}", "ses-0001", "dwi", f"{subject_id}_ses-0001_{parameters[i]}.nii.gz")
@@ -196,6 +300,17 @@ def save_images(subject_id, parameters, save_location, img_paths):
         ants.image_write(ants.image_read(img_paths[i]), save_path)
 
 def downsample_image(image_path, template_path):
+    """
+    Downsample the input image to the resolution of the template image. We are forced to use this because
+    some SOOP images are too large to be processed by ANTs.
+
+    Arguments:
+        image_path (str): The path to the input image.
+        template_path (str): The path to the template image.
+
+    Returns:
+        str: The path to the downsampled image.
+    """
     new_img_path = []
     new_img_path = image_path.replace('brainExtracted.nii.gz', 'corrected.nii.gz')
     img = ants.image_read(image_path)
