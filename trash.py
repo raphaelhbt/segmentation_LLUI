@@ -5,7 +5,8 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset, SubsetRandomSampler, random_split
 import ants
 import numpy as np
-import UNet_modelv2 as unet2
+#import UNet_modelv2 as unet2
+import UNet_modelv2_dropout as unet2_dropout
 from torchvision import transforms
 import random
 from torch.utils.tensorboard import SummaryWriter  
@@ -23,7 +24,7 @@ random.seed(0)  # Set seed for random module
 # Set parameters
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-model = unet2.UNet3D(in_channels=3, out_channels=1).to(DEVICE)
+model = unet2_dropout.UNet3D(in_channels=3, out_channels=1, dropout_rate=0.2).to(DEVICE)
 ORIGINAL_SIZE = [182, 218, 182]
 NUM_EPOCHS = 100
 INITIAL_LEARNING_RATE = 1e-2
@@ -31,7 +32,6 @@ BATCH_SIZE = 2
 PATCH_SIZE = [128, 128, 128]
 STEP_SIZE = 64
 optimizer = torch.optim.SGD(model.parameters(), lr=INITIAL_LEARNING_RATE, momentum=0.99, nesterov=True)
-threshold = 0.5
 power = 0.9
 
 # Initialise the saving directory
@@ -55,44 +55,42 @@ def RandomRotateScale(list_of_images):
     Returns:
     transformed_img: list of transformed torchio images
     """
-    transform = tio.OneOf({
-        tio.RandomAffine(
-            scales=(0.7, 1.4),
-            degrees=(-30, 30, -30, 30, -30, 30),
-            isotropic=True,
-            default_pad_value=0,
-            p=0.08
-        ),
-        tio.RandomAffine(
-            scales=(0.7, 1.4),
-            isotropic=True,
-            default_pad_value=0,
-            p=0.16
-        ),
-        tio.RandomAffine(
-            degrees=(-30, 30, -30, 30, -30, 30),
-            isotropic=True,
-            default_pad_value=0,
-            p=0.16
-        ),
-    }, p=1.0)
+    prob_both = 0.08
+    prob_scale = 0.16
+    prob_rotate = 0.16
 
-    transformed_img = []
-    for img in list_of_images:
-        transformed_img.append(transform(img))
-    return transformed_img
+    do_both = random.random() < prob_both
+    do_scale = random.random() < prob_scale
+    do_rotate = random.random() < prob_rotate
+
+    both = tio.RandomAffine(
+            scales=(0.7, 1.4),
+            degrees=(-30, 30, -30, 30, -30, 30),
+            isotropic=True,
+            default_pad_value=0
+        )
+    scale = tio.RandomAffine(
+            scales=(0.7, 1.4),
+            isotropic=True,
+            default_pad_value=0
+        )
+    rotate = tio.RandomAffine(
+            degrees=(-30, 30, -30, 30, -30, 30),
+            isotropic=True,
+            default_pad_value=0
+        )
+    if do_both:
+        for img in list_of_images:
+            img = both(img)
+    elif do_scale:
+        for img in list_of_images:
+            img = scale(img)
+    elif do_rotate:
+        for img in list_of_images:
+            img = rotate(img)
+    return list_of_images
 
 def RandomGaussianNoise(list_of_images):
-    """
-    Add random Gaussian noise to the images with a probability of 0.15.
-    The standard deviation is sampled from a uniform distribution between 0 and 0.1. The mean is set to 0.
-
-    Args:
-    list_of_images: list of torchio images
-
-    Returns:
-    transformed: list of transformed torchio images
-    """
     transform = tio.RandomNoise(
                 mean=0, 
                 std=(0, 0.1), 
@@ -320,20 +318,20 @@ class BidsDataset(Dataset):
         adc_path = os.path.join(self.bids_dir, subject, "ses-0001", "dwi", f"{subject}_ses-0001_ADC.nii.gz")
         dwi_path = os.path.join(self.bids_dir, subject, "ses-0001", "dwi", f"{subject}_ses-0001_dwi.nii.gz")
         mask_path = os.path.join(self.bids_dir, "derivatives", subject, "ses-0001", f"{subject}_ses-0001_msk.nii.gz")
-        
+
         # Check if files exist
         if not all(os.path.exists(path) for path in [FLAIR_path, adc_path, dwi_path, mask_path]):
             raise FileNotFoundError("One or more files do not exist")
 
         # Load images
-        FLAIR_img = ants.image_read(FLAIR_path).numpy()
-        adc_img = ants.image_read(adc_path).numpy()
-        dwi_img = ants.image_read(dwi_path).numpy()
-        mask_img = ants.image_read(mask_path).numpy()
+        FLAIR_img = ants.image_read(FLAIR_path, dimension=3, reorient=True).numpy()
+        adc_img = ants.image_read(adc_path, dimension=3, reorient=True).numpy()
+        dwi_img = ants.image_read(dwi_path, dimension=3, reorient=True).numpy()
+        mask_img = ants.image_read(mask_path, dimension=3, reorient=True).numpy()
 
         # Apply transform if provided
         if self.transform:
-            data = [FLAIR_img, adc_img, dwi_img, mask_img]
+            data = [adc_img, FLAIR_img, dwi_img, mask_img]
         
             for i in range(len(data)):
                 data[i] = tio.ScalarImage(tensor=torch.tensor(data[i]).unsqueeze(0))
@@ -342,8 +340,7 @@ class BidsDataset(Dataset):
 
             for i in range(len(data)):
                 data[i] = data[i].numpy().squeeze(0)
-    
-            FLAIR_img, adc_img, dwi_img, mask_img = data
+            adc_img, FLAIR_img, dwi_img, mask_img = data
 
         # Normalize images after applying transforms
         FLAIR_img = (FLAIR_img - FLAIR_img.min()) / (FLAIR_img.max() - FLAIR_img.min()+1e-6)
@@ -530,7 +527,7 @@ for epoch in range(NUM_EPOCHS):
             # Zero the gradients
             optimizer.zero_grad()
             
-            # Forward pass with mixed precision
+            # Forward pass with mixed precision        
             scores = model(concatenated_data)
 
             # Flatten predictions and targets
@@ -539,7 +536,7 @@ for epoch in range(NUM_EPOCHS):
 
             # Compute Loss and Dice score
             global_loss, dice, BCE = criterion(predictions_flat, targets_flat)
-
+            
             # Backward pass 
             global_loss.backward()
 
@@ -563,9 +560,9 @@ for epoch in range(NUM_EPOCHS):
     avg_epoch_BCE = epoch_BCE / (len(train_loader)*len(concatenated_data_all_patches[0]))
     avg_epoch_dice = epoch_dice / (len(train_loader)*len(concatenated_data_all_patches[0]))
     avg_epoch_loss = epoch_loss / (len(train_loader)*len(concatenated_data_all_patches[0]))
-    writer.add_scalars('Metrics', {'Train_BCE': avg_epoch_BCE}, epoch + 1)
-    writer.add_scalars('Metrics', {'Train_Dice': avg_epoch_dice}, epoch + 1)
-    writer.add_scalars('Metrics', {'Train_Loss': avg_epoch_loss}, epoch + 1)
+    writer.add_scalars('Metrics/corrected_dropout', {'Train_BCE': avg_epoch_BCE}, epoch + 1)
+    writer.add_scalars('Metrics/corrected_dropout', {'Train_Dice': avg_epoch_dice}, epoch + 1)
+    writer.add_scalars('Metrics/corrected_dropout', {'Train_Loss': avg_epoch_loss}, epoch + 1)
 
     end_time = time()
     print(f'Epoch [{epoch+1}/{NUM_EPOCHS}] completed. Time taken: {(end_time - start_time):.2f} seconds.')
@@ -577,7 +574,7 @@ for epoch in range(NUM_EPOCHS):
 
     # Save the model every 5 epochs
     if (epoch + 1) % SAVE_EVERY == 0:
-        save_path = os.path.join(MODEL_DIR, f"model_epoch_{epoch+1}.pth")
+        save_path = os.path.join(MODEL_DIR, f"model_dropout_epoch_{epoch+1}.pth")
         torch.save(model.state_dict(), save_path)
         print(f"Model saved to {save_path}")
     
@@ -616,7 +613,7 @@ for epoch in range(NUM_EPOCHS):
                 coord_patch_list,
                 ORIGINAL_SIZE
             )
-
+            
             reconstructed_groundtruth = reconstruct_segmented_image(
                 target.cpu().numpy(),
                 [256, 256, 256],
@@ -655,9 +652,9 @@ for epoch in range(NUM_EPOCHS):
     print(f"Epoch {epoch + 1}/{NUM_EPOCHS}, Learning Rate: {scheduler.get_last_lr()[0]:.5f}")
 
     # Log the average Dice score and Loss for the validation set
-    writer.add_scalars('Metrics', {'Validation_Dice': avg_dice_score}, epoch + 1)
-    writer.add_scalars('Metrics', {'Validation_BCE': avg_val_BCE}, epoch + 1)
-    writer.add_scalars('Metrics', {'Validation_Loss': avg_val_loss}, epoch + 1)
+    writer.add_scalars('Metrics/corrected_dropout', {'Validation_Dice': avg_dice_score}, epoch + 1)
+    writer.add_scalars('Metrics/corrected_dropout', {'Validation_BCE': avg_val_BCE}, epoch + 1)
+    writer.add_scalars('Metrics/corrected_dropout', {'Validation_Loss': avg_val_loss}, epoch + 1)
     
     # Clear cache and collect garbage
     del val_BCE, val_dice, val_loss, avg_val_BCE, avg_dice_score, avg_val_loss
