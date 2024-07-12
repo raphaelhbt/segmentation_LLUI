@@ -23,6 +23,7 @@ random.seed(0)  # Set seed for random module
 # Set parameters
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
+number_cores = 2
 model = unet2.UNet3D(in_channels=3, out_channels=1).to(DEVICE)
 model.apply(unet2.InitWeights_He(neg_slope=1e-2))
 ORIGINAL_SIZE = [182, 218, 182]
@@ -35,7 +36,6 @@ optimizer = torch.optim.SGD(model.parameters(), lr=INITIAL_LEARNING_RATE, moment
 power = 0.9
 
 # Initialise the saving directory
-SAVE_EVERY = 5  # Save the model every 5 epochs
 MODEL_DIR = "saved_models"
 os.makedirs(MODEL_DIR, exist_ok=True)
 
@@ -91,17 +91,43 @@ def RandomRotateScale(list_of_images):
     return list_of_images
 
 def RandomGaussianNoise(list_of_images):
+    """
+    Randomly add Gaussian noise to the images with a probability of 0.15. 
+    The standard deviation is sampled from a uniform distribution between 0 and 0.1.
+
+    Args:
+    list_of_images: list of torchio images
+
+    Returns:
+    transformed: list of transformed torchio images
+    """
+    prob = 0.15
+    do_noise = random.random() < prob
+
     transform = tio.RandomNoise(
                 mean=0, 
                 std=(0, 0.1), 
-                p=0.15
             )
-    
-    transformed = []
-    for i in range(len(list_of_images) - 1): # Don't apply noise to the mask
-        transformed.append(transform(list_of_images[i]))
-    transformed.append(list_of_images[-1]) # Append the mask
-    return transformed
+
+    if do_noise:
+        for i in range(len(list_of_images)-1):  # Don't apply noise to the mask
+            # Create a mask where the image is not equal to 0
+            mask = list_of_images[i].tensor.squeeze(0) != 0
+            
+            # Apply the transformation
+            transformed_image = transform(list_of_images[i])
+            
+            # Extract tensor from the transformed image
+            transformed_tensor = transformed_image.tensor
+            
+            # Apply the mask: keep original values where the mask is False (image == 0)
+            masked_tensor = transformed_tensor * mask.float().unsqueeze(0)
+            
+            # Create a new ScalarImage with the masked tensor
+            transformed_image = tio.ScalarImage(tensor=masked_tensor)
+            
+            list_of_images[i] = transformed_image
+    return list_of_images
 
 def RandomGaussianBlur(list_of_images):
     """
@@ -126,14 +152,10 @@ def RandomGaussianBlur(list_of_images):
                     std=(kernel_width, kernel_width),
                 )
     if do_blur:
-        transformed_sample = []
         if do_modality:
             for i in range(len(list_of_images) - 1): # Don't apply blur to the mask
-                transformed_sample.append(transform(list_of_images[i]))
-            transformed_sample.append(list_of_images[-1]) # Append the mask
-            return transformed_sample
-    else:
-        return list_of_images
+                list_of_images[i] = transform(list_of_images[i])
+    return list_of_images
 
 def RandomBrightness(list_of_images):
     """
@@ -281,7 +303,29 @@ def RandomMirror(list_of_images):
         transformed_images.append(transformed_tensor)
         
     return transformed_images
-   
+ 
+    """
+    Randomly mirror the images with a probability of 0.15. If this augmentation is triggered in a sample,
+    mirroring is applied with a probability of 0.5 for each of the associated modalities.
+
+    Args:
+    list_of_images: list of torchio images
+
+    Returns:
+    list_of_images: list of torchio images
+    """
+    # Initialize the transformation
+    transform = tio.RandomFlip(axes=(0, 1, 2), p= 0.5) 
+    
+    # Apply the same transformation to all images
+    transformed_images = []
+    for i in range(len(list_of_images)):
+        torch.manual_seed(0)  
+        transformed_tensor = transform(list_of_images[i])  
+        transformed_images.append(transformed_tensor)
+        
+    return transformed_images
+ 
 # BIDS Dataset Loader
 class BidsDataset(Dataset):
     """
@@ -500,21 +544,25 @@ transform = transforms.Compose([
 # Initialize loss function
 criterion = BCEDiceLoss()
 
+# Model saving initialisation
+best_metric = -1
+metric_values = []
+
 # Initialize Dataset and DataLoader
 bids_dir = "/home/user/Documents/raph/preprocessed_datasets/ISLES2022"
 dataset = BidsDataset(bids_dir, transform=None, patch_size=PATCH_SIZE, step_size=STEP_SIZE)
 
 test_size = 50
-train_size = 10 #int(0.8 * len(dataset) - test_size) #160
-val_size = len(dataset) - train_size - test_size #50
+train_size = int(0.8 * (len(dataset) - test_size)) #160
+val_size = len(dataset) - train_size - test_size #40
 
 train_indices, val_indices = random_split(range(len(dataset)- test_size), [train_size, val_size])
 
-train_dataset = BidsDataset(bids_dir, transform=None, patch_size=PATCH_SIZE, step_size=STEP_SIZE)
+train_dataset = BidsDataset(bids_dir, transform=transform, patch_size=PATCH_SIZE, step_size=STEP_SIZE)
 val_dataset = BidsDataset(bids_dir, transform=None, patch_size=PATCH_SIZE, step_size=STEP_SIZE)
 
-train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, num_workers=2, pin_memory=True, sampler=SubsetRandomSampler(train_indices))
-val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, num_workers=2, pin_memory=True, sampler=SubsetRandomSampler(val_indices))
+train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, num_workers=number_cores, pin_memory=True, sampler=SubsetRandomSampler(train_indices))
+val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, num_workers=number_cores, pin_memory=True, sampler=SubsetRandomSampler(val_indices))
 scheduler = PolynomialLR(optimizer, total_iters=NUM_EPOCHS, power=power)
 
 # Train the model
@@ -559,8 +607,8 @@ for epoch in range(NUM_EPOCHS):
             torch.cuda.empty_cache()
             gc.collect()
 
-        # if batch_idx % 10 == 0:
-        #     print(f"Epoch [{epoch + 1}/{NUM_EPOCHS}], Batch [{batch_idx + 1}/{len(train_loader)}], BCE: {BCE:.4f}, Dice: {dice:.4f}, Loss: {global_loss:.4f}")
+        if batch_idx % 10 == 0:
+            print(f"Epoch [{epoch + 1}/{NUM_EPOCHS}], Batch [{batch_idx + 1}/{len(train_loader)}], BCE: {BCE:.4f}, Dice: {dice:.4f}, Loss: {global_loss:.4f}")
     
     # Log average epoch loss and dice score
     avg_epoch_BCE = epoch_BCE / (len(train_loader)*len(concatenated_data_all_patches[0]))
@@ -577,14 +625,8 @@ for epoch in range(NUM_EPOCHS):
     del global_loss, BCE, dice, epoch_BCE, epoch_dice, epoch_loss, avg_epoch_BCE, avg_epoch_dice, avg_epoch_loss, concatenated_data_all_patches, target, coord_patch_list, start_time, end_time
     torch.cuda.empty_cache()
     gc.collect()
-
-    # Save the model every 5 epochs
-    # if (epoch + 1) % SAVE_EVERY == 0:
-    #     save_path = os.path.join(MODEL_DIR, f"model_epoch_with_initialisation_full_dataset_no_dropout{epoch+1}.pth")
-    #     torch.save(model.state_dict(), save_path)
-    #     print(f"Model saved to {save_path}")
     
-    # print("Validation started...")
+    print("Validation started...")
 
     # Validation
     model.eval()
@@ -593,7 +635,7 @@ for epoch in range(NUM_EPOCHS):
     val_dice = 0.0
     val_loss = 0.0
     with torch.no_grad():
-        for batch_idx, (concatenated_data_all_patches, target, coord_patch_list) in enumerate(train_loader):
+        for batch_idx, (concatenated_data_all_patches, target, coord_patch_list) in enumerate(val_loader):
             target = target.to(DEVICE)
             predictions_flat = []
 
@@ -636,8 +678,8 @@ for epoch in range(NUM_EPOCHS):
             val_BCE += BCE
             val_dice += dice
             val_loss += loss
-            # if batch_idx % 10 == 0:
-            #     print(f"Batch [{batch_idx + 1}/{len(val_loader)}], Validation BCE: {BCE:.4f}, Dice Score: {dice:.4f}")
+            if batch_idx % 10 == 0:
+                print(f"Batch [{batch_idx + 1}/{len(val_loader)}], Validation BCE: {BCE:.4f}, Dice Score: {dice:.4f}")
 
             # Free up memory
             del target, predictions_flat, reconstructed_image, reconstructed_groundtruth, reconstructed_image_tensor, reconstructed_gt_tensor, loss, dice, BCE, concatenated_data_all_patches, coord_patch_list
@@ -648,9 +690,9 @@ for epoch in range(NUM_EPOCHS):
     scheduler.step()
 
     # Calculate the average Dice score and validation loss
-    avg_val_BCE = val_BCE / len(train_loader) #len(val_loader)
-    avg_dice_score = val_dice / len(train_loader) #len(val_loader)
-    avg_val_loss = val_loss / len(train_loader) #len(val_loader) 
+    avg_val_BCE = val_BCE / len(val_loader)
+    avg_dice_score = val_dice / len(val_loader)
+    avg_val_loss = val_loss / len(val_loader) 
 
     print(f"Average Validation Loss: {avg_val_BCE:.4f}, Average Dice Score: {avg_dice_score:.4f}")
 
@@ -662,6 +704,13 @@ for epoch in range(NUM_EPOCHS):
     writer.add_scalars('Metrics/with_binarized_valid', {'Validation_BCE': avg_val_BCE}, epoch + 1)
     writer.add_scalars('Metrics/with_binarized_valid', {'Validation_Loss': avg_val_loss}, epoch + 1)
     
+    # Save the best model 
+    metric_values.append(avg_dice_score)
+    if avg_dice_score > best_metric:
+        best_metric = avg_dice_score
+        save_path = os.path.join(MODEL_DIR, f"model_without_dropout.pth")
+        torch.save(model.state_dict(), save_path)
+
     # Clear cache and collect garbage
     del val_BCE, val_dice, val_loss, avg_val_BCE, avg_dice_score, avg_val_loss
     torch.cuda.empty_cache()

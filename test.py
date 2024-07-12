@@ -69,17 +69,43 @@ def RandomRotateScale(list_of_images):
     return list_of_images
 
 def RandomGaussianNoise(list_of_images):
+    """
+    Randomly add Gaussian noise to the images with a probability of 0.15. 
+    The standard deviation is sampled from a uniform distribution between 0 and 0.1.
+
+    Args:
+    list_of_images: list of torchio images
+
+    Returns:
+    transformed: list of transformed torchio images
+    """
+    prob = 0.15
+    do_noise = random.random() < prob
+
     transform = tio.RandomNoise(
                 mean=0, 
                 std=(0, 0.1), 
-                p=0.15
             )
-    
-    transformed = []
-    for i in range(len(list_of_images) - 1): # Don't apply noise to the mask
-        transformed.append(transform(list_of_images[i]))
-    transformed.append(list_of_images[-1]) # Append the mask
-    return transformed
+
+    if do_noise:
+        for i in range(len(list_of_images)-1):  # Don't apply noise to the mask
+            # Create a mask where the image is not equal to 0
+            mask = list_of_images[i].tensor.squeeze(0) != 0
+            
+            # Apply the transformation
+            transformed_image = transform(list_of_images[i])
+            
+            # Extract tensor from the transformed image
+            transformed_tensor = transformed_image.tensor
+            
+            # Apply the mask: keep original values where the mask is False (image == 0)
+            masked_tensor = transformed_tensor * mask.float().unsqueeze(0)
+            
+            # Create a new ScalarImage with the masked tensor
+            transformed_image = tio.ScalarImage(tensor=masked_tensor)
+            
+            list_of_images[i] = transformed_image
+    return list_of_images
 
 def RandomGaussianBlur(list_of_images):
     """
@@ -104,14 +130,10 @@ def RandomGaussianBlur(list_of_images):
                     std=(kernel_width, kernel_width),
                 )
     if do_blur:
-        transformed_sample = []
         if do_modality:
             for i in range(len(list_of_images) - 1): # Don't apply blur to the mask
-                transformed_sample.append(transform(list_of_images[i]))
-            transformed_sample.append(list_of_images[-1]) # Append the mask
-            return transformed_sample
-    else:
-        return list_of_images
+                list_of_images[i] = transform(list_of_images[i])
+    return list_of_images
 
 def RandomBrightness(list_of_images):
     """
@@ -239,49 +261,65 @@ def RandomGamma(list_of_images):
 
 def RandomMirror(list_of_images):
     """
-    Add random Gaussian blur to the images with a probability of 0.2. If this augmentation
-    is triggered in a sample, blurring is applied with a probability of 0.5 for each of the
-    associated modalities. The kernel width is sampled from a uniform distribution between 0.5 and 1.5.
+    Randomly mirror the images with a probability of 0.15. If this augmentation is triggered in a sample,
+    mirroring is applied with a probability of 0.5 for each of the associated modalities.
 
     Args:
     list_of_images: list of torchio images
 
     Returns:
-    transformed_sample: list of transformed torchio images
+    list_of_images: list of torchio images
     """
-    sample_prob=0.2
-    do_blur = random.random() < sample_prob
-    kernel_width = random.uniform(0.5, 1.5)
-    if do_blur:
-        transformed_sample = []
-        for i in range(len(list_of_images) - 1): # Don't apply blur to the mask
-            transform = tio.RandomBlur(
-                std=(kernel_width, kernel_width),
-                p=0.5
-            )
-            transformed_sample.append(transform(list_of_images[i]))
-        transformed_sample.append(list_of_images[-1]) # Append the mask
-        return transformed_sample
-    else:
-        return list_of_images
+    # Initialize the transformation
+    transform = tio.RandomFlip(axes=(0, 1, 2), p= 0.5) 
+    
+    # Apply the same transformation to all images
+    transformed_images = []
+    for i in range(len(list_of_images)):
+        torch.manual_seed(0)  
+        transformed_tensor = transform(list_of_images[i])  
+        transformed_images.append(transformed_tensor)
+        
+    return transformed_images
+ 
+    """
+    Randomly mirror the images with a probability of 0.15. If this augmentation is triggered in a sample,
+    mirroring is applied with a probability of 0.5 for each of the associated modalities.
 
+    Args:
+    list_of_images: list of torchio images
+
+    Returns:
+    list_of_images: list of torchio images
+    """
+    # Initialize the transformation
+    transform = tio.RandomFlip(axes=(0, 1, 2), p= 0.5) 
+    
+    # Apply the same transformation to all images
+    transformed_images = []
+    for i in range(len(list_of_images)):
+        torch.manual_seed(0)  
+        transformed_tensor = transform(list_of_images[i])  
+        transformed_images.append(transformed_tensor)
+        
+    return transformed_images
+ 
 transform = transforms.Compose([
-    #lambda data: RandomRotateScale(data),
-    #lambda data: RandomGaussianNoise(data),
+    lambda data: RandomRotateScale(data),
+    lambda data: RandomGaussianNoise(data),
     lambda data: RandomGaussianBlur(data),
-    #lambda data: RandomBrightness(data),
-    #lambda data: RandomContrast(data),
-    #lambda data: RandomLowResolution(data),
-    #lambda data: RandomGamma(data),
-    #lambda data: RandomMirror(data)
+    lambda data: RandomBrightness(data),
+    lambda data: RandomContrast(data),
+    lambda data: RandomLowResolution(data),
+    lambda data: RandomGamma(data),
+    lambda data: RandomMirror(data)
     ])
 
-
-
 transformed_imgs = transform(new_data)
-
 for i in range(len(transformed_imgs)):
     transformed_imgs[i] = transformed_imgs[i].numpy().squeeze(0)
 
+
 for i in range(len(transformed_imgs)):
     ants.image_write(ants.from_numpy(transformed_imgs[i]), f'transformed_img_{i}.nii.gz')
+
