@@ -24,6 +24,7 @@ random.seed(0)  # Set seed for random module
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 model = unet2.UNet3D(in_channels=3, out_channels=1).to(DEVICE)
+model.apply(unet2.InitWeights_He(neg_slope=1e-2))
 ORIGINAL_SIZE = [182, 218, 182]
 NUM_EPOCHS = 100
 INITIAL_LEARNING_RATE = 1e-2
@@ -97,8 +98,9 @@ def RandomGaussianNoise(list_of_images):
             )
     
     transformed = []
-    for img in list_of_images:
-        transformed.append(transform(img))
+    for i in range(len(list_of_images) - 1): # Don't apply noise to the mask
+        transformed.append(transform(list_of_images[i]))
+    transformed.append(list_of_images[-1]) # Append the mask
     return transformed
 
 def RandomGaussianBlur(list_of_images):
@@ -114,18 +116,22 @@ def RandomGaussianBlur(list_of_images):
     transformed_sample: list of transformed torchio images
     """
     sample_prob=0.2
+    modality_prob=0.5
+    
     do_blur = random.random() < sample_prob
+    do_modality = random.random() < modality_prob
 
+    kernel_width = random.uniform(0.5, 1.5)
+    transform = tio.RandomBlur(
+                    std=(kernel_width, kernel_width),
+                )
     if do_blur:
         transformed_sample = []
-        for img in list_of_images:
-            kernel_width = random.uniform(0.5, 1.5)
-            transform = tio.RandomBlur(
-                std=(kernel_width, kernel_width),
-                p=0.5
-            )
-            transformed_sample.append(transform(img))
-        return transformed_sample
+        if do_modality:
+            for i in range(len(list_of_images) - 1): # Don't apply blur to the mask
+                transformed_sample.append(transform(list_of_images[i]))
+            transformed_sample.append(list_of_images[-1]) # Append the mask
+            return transformed_sample
     else:
         return list_of_images
 
@@ -135,19 +141,18 @@ def RandomBrightness(list_of_images):
     The factor is sampled from a uniform distribution between 0.7 and 1.3.
 
     Args:
-    list_of_images: list of torchio images
+            list_of_images: list of torchio images
     
     Returns:
     list_of_images: list of torchio images
     """
     prob = 0.15
     factor = random.uniform(0.7, 1.3)
-    transformed_sample = []
     if random.random() < prob:
-        for i in range(len(list_of_images)):
+        for i in range(len(list_of_images) - 1): # Don't apply brightness to the mask
             img = list_of_images[i].numpy().squeeze(0)
-            transformed_sample.append((img * factor)) 
-            transformed_sample[i] = tio.ScalarImage(tensor=torch.tensor(transformed_sample[i]).unsqueeze(0))    
+            list_of_images[i] = (img * factor) 
+            list_of_images[i] = tio.ScalarImage(tensor=torch.tensor(list_of_images[i]).unsqueeze(0))
     return list_of_images
 
 def RandomContrast(list_of_images):
@@ -164,13 +169,13 @@ def RandomContrast(list_of_images):
     """
     prob = 0.15
     factor = random.uniform(0.7, 1.3)
-    transformed_sample = []
+
     if random.random() < prob:
-        for i in range(len(list_of_images)):
+        for i in range(len(list_of_images) - 1): # Don't apply contrast to the mask
             img = list_of_images[i].numpy().squeeze(0)
-            transformed_sample.append((img * factor)) 
-            transformed_sample[i] = np.clip(transformed_sample[i], img.min(), img.max())
-            transformed_sample[i] = tio.ScalarImage(tensor=torch.tensor(transformed_sample[i]).unsqueeze(0)) 
+            list_of_images[i] = (img * factor)
+            list_of_images[i] = np.clip(list_of_images[i], img.min(), img.max())
+            list_of_images[i] = tio.ScalarImage(tensor=torch.tensor(list_of_images[i]).unsqueeze(0))
     return list_of_images
  
 def RandomLowResolution(list_of_images):
@@ -236,7 +241,7 @@ def RandomGamma(list_of_images):
 
     if do_it:
         transform = tio.RandomGamma(log_gamma=(0.7, 1.5))
-        for i in range(len(list_of_images)):
+        for i in range(len(list_of_images) - 1): # Don't apply gamma to the mask
             mask = list_of_images[i].numpy().squeeze(0) != 0
 
             # Normalize image to [0,1]
@@ -270,13 +275,13 @@ def RandomMirror(list_of_images):
     
     # Apply the same transformation to all images
     transformed_images = []
-    for img in list_of_images:
+    for i in range(len(list_of_images)):
         torch.manual_seed(0)  
-        transformed_tensor = transform(img)  
+        transformed_tensor = transform(list_of_images[i])  
         transformed_images.append(transformed_tensor)
         
     return transformed_images
-   
+ 
 # BIDS Dataset Loader
 class BidsDataset(Dataset):
     """
@@ -458,7 +463,7 @@ class BCEDiceLoss(nn.Module):
         self.bce_loss = nn.BCELoss()
         self.epsilon = epsilon
  
-    def forward(self, predictions, targets):
+    def forward(self, predictions, targets, is_validation=False):
         #Convert to float
         predictions = predictions.float()
         targets = targets.float()
@@ -466,6 +471,8 @@ class BCEDiceLoss(nn.Module):
         bce = self.bce_loss(predictions, targets)
 
         # Compute Dice Loss
+        if is_validation:
+            predictions = (predictions > 0.5).float() # Binarize the predictions for the validation set
         predictions_flat = predictions.view(predictions.size(0), -1)
         targets_flat = targets.view(targets.size(0), -1)
         intersection = (predictions_flat * targets_flat).sum(1)
@@ -623,7 +630,7 @@ for epoch in range(NUM_EPOCHS):
             # Compute the loss on the reconstructed images
             reconstructed_image_tensor = torch.tensor(reconstructed_image).to(DEVICE)
             reconstructed_gt_tensor = torch.tensor(reconstructed_groundtruth).to(DEVICE)
-            loss, dice, BCE = criterion(reconstructed_image_tensor.float(), reconstructed_gt_tensor.float())
+            loss, dice, BCE = criterion(reconstructed_image_tensor.float(), reconstructed_gt_tensor.float(), is_validation=True)
 
             # Compute the loss
             val_BCE += BCE
