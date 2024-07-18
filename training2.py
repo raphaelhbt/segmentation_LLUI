@@ -10,11 +10,16 @@ from torchsummary import summary
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 from torch.optim.lr_scheduler import PolynomialLR
+import random
+
+# Set all random seed for reproducibility
+random.seed(0)
+torch.manual_seed(0)
+torch.cuda.manual_seed(0)
 
 
 # NETWORK ARCHITECTURE
 #--------------------------------------------------------------------------------------
-
 # Define network parameters
 spatial_dims = 3
 in_channels = 3
@@ -26,32 +31,10 @@ filters = [32, 64, 128, 256, 320]
 # default params
 # - norm_name: instance
 # - act_name: leaky relu (negative_slope 0.01)
-# - dropout: None # change to 0.2 for example (=dropout rate in every layer)
-# dropout = 0.2
-
-class DynUNetWithSigmoid(torch.nn.Module):
-    def __init__(self, spatial_dims, in_channels, out_channels, kernel_size, strides, upsample_kernel_size, filters, dropout=None):
-        super(DynUNetWithSigmoid, self).__init__()
-        # Initialize the DynUNet
-        self.dynunet = DynUNet(spatial_dims=spatial_dims, 
-                               in_channels=in_channels, 
-                               out_channels=out_channels, 
-                               kernel_size=kernel_size, 
-                               strides=strides, 
-                               upsample_kernel_size=upsample_kernel_size,
-                               filters=filters,
-                               dropout = dropout
-                            )
-        
-    def forward(self, x):
-        # Pass input through DynUNet
-        x = self.dynunet(x)
-        # Apply sigmoid activation function
-        x = torch.sigmoid(x)
-        return x
+# - dropout: None
     
 # Initialize the DynUNet
-model = DynUNetWithSigmoid(
+model = DynUNet(
     spatial_dims=spatial_dims,
     in_channels=in_channels,
     out_channels=out_channels,
@@ -63,8 +46,8 @@ model = DynUNetWithSigmoid(
 )
 
 # Print model summary
-#device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-#model.to(device)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model.to(device)
 #summary(model, (in_channels, 128, 128, 128))
 
 #--------------------------------------------------------------------------------------
@@ -73,13 +56,11 @@ model = DynUNetWithSigmoid(
 # SETTINGS
 #--------------------------------------------------------------------------------------
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
 model_savepath = Path("saved_models")
-model_savepath_file = model_savepath / "best_model_UNet_StrokeLesion.pth"
+model_savepath_file = model_savepath / "best_model_UNet_StrokeLesion_Half_data_aug.pth"
 
 epochs = 100
-val_interval = 10 # at which every number of epochs validation should be computed
+val_interval = 1 #10 # at which every number of epochs validation should be computed
 
 criterion_train = monai.losses.DiceCELoss(sigmoid=True)
 criterion_val = monai.losses.DiceCELoss(sigmoid=False) # no sigmoid in validation as the sigmoid is already done before patch aggregation
@@ -103,7 +84,6 @@ bids_dir = Path('/home/user/Documents/raph/preprocessed_datasets/ISLES2022')
 
 # List all directories in the parent directory that start with 'sub-'
 sub_folders = [p.name for p in bids_dir.iterdir() if p.is_dir() and p.name.startswith('sub-')]
-print(sub_folders)
 
 # loop over all subjects to get relevant images/labels         
 subjects = []
@@ -126,49 +106,140 @@ for subject_id in sub_folders:
     # add subject to list
     subjects.append(subject)
 
-# defina data augmentations ## --- PLEASE CHANGE AUGMENTATIONS, THIS IS JUST A DUMMY PLACEHOLDER
+# Define data augmentations 
+value1=random.uniform(0.5, 1.5)
+value2=random.uniform(0.5, 1.5)
+std_values=sorted([value1, value2])
+
+def RandomBlur(x):
+    prob_modality = 0.5
+    do_blur = random.random() < prob_modality
+    if do_blur:
+        std = random.uniform(std_values[0], std_values[1])
+        x = tio.RandomBlur(std=std)(x)
+    return x
+
+def RandomBrightness(x):
+    factor = random.uniform(0.7, 1.3)
+    x = x * factor
+    return x
+
+def RandomContrast(x):
+    factor = random.uniform(0.65, 1.5)
+    original_min = x.data.min().item()  # Get the original minimum intensity
+    original_max = x.data.max().item()  # Get the original maximum intensity
+    x.data *= factor
+    x.data = x.data.clip(original_min, original_max)  # Clip the voxel intensities to the original range
+    return x
+
+def RandomLowResolution(x):
+    modality_prob = 0.5
+    do_low_res = random.random() < modality_prob
+    factor = random.uniform(1, 2)
+    if do_low_res:
+        x = tio.Resample((factor, factor, factor),
+                         image_interpolation='nearest')(x)
+        x = tio.CropOrPad(x.shape, padding_mode='constant')(x)
+    return x
+
+def RandomGamma(x):
+    prob_prior_transform = 0.15
+    do_prior_transform = random.random() < prob_prior_transform
+    transform= tio.RandomGamma(log_gamma=(0.7, 1.5))
+
+    mask = x.data != 0
+
+    #Normalise image to [0, 1]
+    x.data = (x.data - x.data.min()) / (x.data.max() - x.data.min() + 1e-6)
+
+    if do_prior_transform:
+        x = 1 - transform(1 - x)
+    
+    x = transform(x)
+
+    #Scale back to original range
+    x.data = x.data * (x.data.max() - x.data.min()) + x.data.min()
+    x.data = x.data * mask
+    return x
+
 transforms = tio.Compose([
-    tio.RandomMotion(p=0.2),
-    tio.RandomBiasField(p=0.3),
-    tio.RandomNoise(p=0.5),
-    tio.RandomFlip(),
     tio.OneOf({
-        tio.RandomAffine(): 0.8,
-        tio.RandomElasticDeformation(): 0.2,
-    }),
+        tio.RandomAffine(
+            scales=(0.7, 1.4),
+            degrees=30,  # This will be interpreted as (-30, 30) for each axis
+            isotropic=True,
+            default_pad_value=0,
+            p=0.08
+        ),
+        tio.RandomAffine(
+            scales=(0.7, 1.4),  # only scaling from U(0.7,1.4)
+            isotropic=True,
+            default_pad_value=0,
+            p=0.16
+        ),
+        tio.RandomAffine(
+            degrees=30,  # This will be interpreted as (-30, 30) for each axis
+            isotropic=True,
+            default_pad_value=0,
+            p=0.16
+        ),
+    }, p=1.0),
+    tio.RandomNoise(     # Add Gaussian noise with random parameters
+                mean=0, 
+                std=(0, 0.1), 
+                p=0.15
+            ),
+    tio.Lambda(RandomBlur,
+                p=0.2,
+                ),
+    tio.Lambda(lambda x: RandomBrightness, 
+               types_to_apply=[tio.INTENSITY],
+               p=0.15),
+    tio.Lambda(lambda x: RandomContrast, 
+               types_to_apply=[tio.INTENSITY],
+               p=0.15),
+    tio.Lambda(lambda x: RandomLowResolution, 
+               p=0.2),
+    tio.Lambda(lambda x: RandomGamma,
+                types_to_apply=[tio.INTENSITY],
+                p=0.15),
+    tio.RandomFlip(
+                axes=(0, 1, 2), 
+                p=0.5
+            ),
 ])
 
 # create the SubjectsDataset
-dataset = tio.SubjectsDataset(subjects, transform=transforms)
-
+dataset = tio.SubjectsDataset(subjects, transform=None)
 
 # split data into training and validation set
+test_size = 50
 train_percent = 0.8
-train_size = int(train_percent * len(dataset))
-val_size = len(dataset) - train_size
-train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
+train_size = int(train_percent * (len(dataset) - 50)) #160
+val_size = len(dataset) - train_size - test_size #40
 
-# add transformations to the training dataset
-train_dataset.dataset.transform = transforms
-# ---COMMENT: if we do for example also z-scoring and so in augmentation, we also have to do this for the validation set
+train_indices, val_indices = random_split(range(len(dataset) - 50), [train_size, val_size])
 
+train_subjects = [subjects[i] for i in train_indices]
+val_subjects = [subjects[i] for i in val_indices]
 
-
+train_dataset = tio.SubjectsDataset(train_subjects, transform=transforms)
+val_dataset = tio.SubjectsDataset(val_subjects, transform=None)
 
 # PATCHED TRAINING SET
 
 batch_size_train = 2
 patch_size_train = 128
-samples_per_volume = 25 # adjust if necessary
-max_queue_length = 25 #????? dont know how many probably depends on memory
+samples_per_volume = 10
+max_queue_length = 50
 
 # define sampler to perform foreground oversampling
 sampler = tio.data.LabelSampler(patch_size = patch_size_train,
     label_name = 'label',
-    label_probabilities = {0: 0.67, 1: 0.33}) # 33% oversamppling of foreground ## is this even possible to have patches with 0 in centre when only at border????
+    label_probabilities = {0: 0.67, 1: 0.33}) # 33% oversamppling of foreground
 
-num_workers = 2 #os.cpu_count() - 2 # dont know how many, probably best to number of CPU minus 2
-patches_training_set = tio.Queue(
+num_workers = 2 
+patches_training_set = tio.Queue(              
     subjects_dataset = train_dataset,
     max_length = max_queue_length,
     samples_per_volume = samples_per_volume,
@@ -179,27 +250,6 @@ patches_training_set = tio.Queue(
 )
 
 training_loader_patches = DataLoader(patches_training_set, batch_size=batch_size_train, shuffle=True)
-
-
-#*** if we wanted to do the validation metrics computation also do with random patches over image instead of specified grid, we could use the following:
-#
-# patches_validation_set = tio.Queue(
-    # subjects_dataset=val_dataset,
-    # max_length=max_queue_length,
-    # samples_per_volume=samples_per_volume,
-    # sampler=sampler,
-    # num_workers=num_workers,
-    # shuffle_subjects=False,
-    # shuffle_patches=False,
-# )
-
-# validation_loader_patches = DataLoader(
-    # patches_validation_set, batch_size=validation_batch_size)
-
-
-#--------------------------------------------------------------------------------------
-
-
 
 # TRAINING LOOP
 #--------------------------------------------------------------------------------------
@@ -216,40 +266,44 @@ best_metric = -1
 best_metric_epoch = -1
 metric_values = []
 
-writer = SummaryWriter()
+writer = SummaryWriter('runs/UNet3D_new_script')
 
 # loop over epochs
 for epoch in range(epochs):
-    print("-" * 10)
-    print(f"epoch {epoch + 1}/{epochs}")
+    # print("-" * 10)
+    # print(f"epoch {epoch + 1}/{epochs}")
     
-    epoch_loss_train = []
+    # epoch_loss_train = []
 
-    model.train()
+    # model.train()
     
-    # loop over batches
-    for batch_idx, batch in enumerate(tqdm(training_loader_patches)):
+    # # loop over batches
+    # for batch_idx, batch in enumerate(tqdm(training_loader_patches)):
 
-        inputs = torch.cat([batch['flair'][tio.DATA], batch['dwi'][tio.DATA], batch['adc'][tio.DATA]], dim=1).to(device)
-        labels = batch['label'][tio.DATA].to(device)
+    #     inputs = torch.cat([batch['flair'][tio.DATA], batch['dwi'][tio.DATA], batch['adc'][tio.DATA]], dim=1).to(device)
+    #     labels = batch['label'][tio.DATA].to(device)
+    
+    #     optimizer.zero_grad()
+    #     outputs = model(inputs)
+    #     loss = criterion_train(outputs, labels)
+    #     loss.backward()
+    #     optimizer.step()
         
-        #*** CHATGPT proposed the follwoing, but I think we do not need it, but please check!
-        # Assuming labels are in shape (batch_size, 1, D, H, W), need to flatten
-        # labels = torch.squeeze(labels).float()  # Assuming labels are originally (batch_size, 1, D, H, W)
+    #     epoch_loss_train.append(loss.item())
+
+    # average_epoch_loss = sum(epoch_loss_train) / len(epoch_loss_train)    
+
+    # print(f"epoch {epoch + 1} average loss: {average_epoch_loss:.4f}")
+
+    # metrics = {
+    #         "Train_Loss": average_epoch_loss,
+    #     }
+    # writer.add_scalars("New_script/Half_data_aug", metrics, epoch + 1)
+
+    # # update learning rate
+    # scheduler.step()
+    # print(f"Epoch {epoch + 1}/{epochs}, Learning Rate: {scheduler.get_last_lr()[0]:.5f}")  
     
-        optimizer.zero_grad()
-        outputs = model(inputs)
-        loss = criterion_train(outputs, labels)
-        loss.backward()
-        optimizer.step()
-        
-        epoch_loss_train.append(loss.item())
-
-    average_epoch_loss = sum(epoch_loss_train) / len(epoch_loss_train)    
-    writer.add_scalar("train_loss", average_epoch_loss, epoch + 1)
-    print(f"epoch {epoch + 1} average loss: {average_epoch_loss:.4f}")
-
-
 # VALIDATION
     if (epoch + 1) % val_interval == 0:
 
@@ -261,7 +315,7 @@ for epoch in range(epochs):
         for subject in tqdm(val_dataset):
             # define GridSampler for current subject
             grid_sampler = tio.inference.GridSampler(
-                subject = subject,  ### in torch.tio tutorial: subject = random.choice(validation_set) = meaning only one subject at a time????? (dont know, but for now I did a loop over all subjects)
+                subject = subject,  
                 patch_size = patch_size_val,
                 patch_overlap = patch_overlap_val,
                 padding_mode = 'constant'
@@ -275,11 +329,11 @@ for epoch in range(epochs):
                 patch_locations = patches_batch[tio.LOCATION]
                 with torch.no_grad():
                     patch_prediction = model(patch_inputs)
-                patch_prediction_logits = torch.sigmoid(patch_prediction) # only needed when sigmoid is not in Unet as last layer (as it is the default in MONAI UNet)
+                patch_prediction_logits = torch.sigmoid(patch_prediction)
                 aggregator.add_batch(patch_prediction_logits, patch_locations)
 
             # aggregate over patches
-            aggregated_logits = aggregator.get_output_tensor()
+            aggregated_logits = aggregator.get_output_tensor().to(device)
             
             # compute validation dice and loss
             ground_truth_seg = subject['label'][tio.DATA].to(device)
@@ -288,13 +342,18 @@ for epoch in range(epochs):
             epoch_loss_val.append(loss_val.item())         
 
         # get validation loss over epoch
-        average_epoch_loss = sum(epoch_loss_val) / len(epoch_loss_train)     
-        writer.add_scalar("val_loss", average_epoch_loss, epoch + 1)
+        average_epoch_val_loss = sum(epoch_loss_val) / len(epoch_loss_val)     
 
         # get validation dice score over epoch        
         average_epoch_dice_val = dice_metric.aggregate().item() # Aggregate the Dice metric for the entire validation set
-        writer.add_scalar("val_dice", average_epoch_dice_val, epoch + 1)
 
+        # Write the metrics to tensorboard
+        metrics2 = {
+            "Val_Loss": average_epoch_val_loss,
+            "Val_Dice": average_epoch_dice_val
+        }
+        writer.add_scalars("New_script/Half_data_aug", metrics2, epoch + 1)
+      
         # check if best model so far
         metric_values.append(average_epoch_dice_val)
         if average_epoch_dice_val > best_metric:
@@ -304,26 +363,11 @@ for epoch in range(epochs):
             print("saved new best metric model")
         print(
             "current epoch: {} current mean dice: {:.4f} best mean dice: {:.4f} at epoch {}".format(
-                epoch + 1, dice_metric, best_metric, best_metric_epoch
+                epoch + 1, average_epoch_dice_val, best_metric, best_metric_epoch
             )
         )
         dice_metric.reset() # reset for next validation round
 
 print(f"train completed, best_metric: {best_metric:.4f} at epoch: {best_metric_epoch}")
 writer.close()
-
-
-
-
-            
-# # ONLY NEEDED WHEN TEST SET (NOT VALIDATION)
-# #**********************************************************
-# # add sigmoid output image (prediction in logits) to subject in torch.tio dataset
-# logits_image = tio.ScalarImage(tensor = aggregated_logits, affine = subject.label.affine)
-# logits_image.save(output_savepath_sigmoid)
-# # add binary segmentation image to subject in torch.tio dataset
-# binary_segmentation = (aggregated_logits > 0.5).float()
-# segmentation_image = tio.ScalarImage(tensor = binary_segmentation, affine = subject.label.affine)
-# logits_image.save(output_savepath_binary)
-# #**********************************************************
             

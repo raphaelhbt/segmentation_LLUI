@@ -1,29 +1,54 @@
-import UNet_modelv2_dropout as unet2_dropout
 import torch
 import pandas as pd
 import os
 import ants
 from torch.utils.data import DataLoader
+from monai.networks.nets import DynUNet
+from pathlib import Path
 
 # Parameters
 NB_FORWARD = 1000
 dropout=0.5
 BATCH_SIZE = 2
-weights_path = '/home/user/Documents/raph/code/saved_models/model_epoch_65.pth'
+weights_path = '/home/user/Documents/raph/code/saved_models/best_model_UNet_StrokeLesion.pth'
 
-bids_dir = "/home/user/Documents/raph/preprocessed_datasets/ISLES2022"
+bids_dir = Path('/home/user/Documents/raph/preprocessed_datasets/ISLES2022')
 parameters = ['FLAIR', 'ADC', 'dwi', 'msk']
 # Device configuration
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Model instantiation
-model = unet2_dropout.UNet3D(in_channels=3, out_channels=1, dropout_rate=dropout).to(DEVICE)
+# Define network parameters
+spatial_dims = 3
+in_channels = 3
+out_channels = 1
+kernel_size = [[3, 3, 3], [3, 3, 3], [3, 3, 3], [3, 3, 3], [3, 3, 3]]
+strides = [[1, 1, 1], [2, 2, 2], [2, 2, 2], [2, 2, 2], [2, 2, 2]]
+up_sample_kernel_size = strides[1:]
+filters = [32, 64, 128, 256, 320]
+dropout = 0.5
+# default params
+# - norm_name: instance
+# - act_name: leaky relu (negative_slope 0.01)
+    
+# Initialize the DynUNet
+model = DynUNet(
+    spatial_dims=spatial_dims,
+    in_channels=in_channels,
+    out_channels=out_channels,
+    kernel_size=kernel_size,
+    strides=strides,
+    upsample_kernel_size=up_sample_kernel_size,
+    filters=filters,
+    dropout = dropout
+)
 
 # Loading the weights
 state_dict = torch.load(weights_path)
 
 # Loading the weights into the model
 model.load_state_dict(state_dict)
+model.to(DEVICE)
 
 # Dropout activation and deactivation
 def enable_dropout(model):
@@ -64,13 +89,9 @@ def get_patient_ids(file_path):
         list: A list containing all patient IDs extracted from the TSV file.
     """
     
-    # Read the TSV file into a pandas DataFrame
-    df = pd.read_csv(file_path, sep='\t')
+    sub_folders = [p.name for p in bids_dir.iterdir() if p.is_dir() and p.name.startswith('sub-')]
     
-    # Extract the 'participant_id' column into a list
-    patient_ids = df['participant_id'].tolist()
-    
-    return patient_ids
+    return sub_folders
 
 def retrieve_img_paths(bids_dir, parameters, subject_id, session_id):
     """
@@ -108,7 +129,7 @@ def retrieve_img_paths(bids_dir, parameters, subject_id, session_id):
 class TestDataset(torch.utils.data.Dataset):
     def __init__(self, bids_dir, patient_ids, session_id='0001'):
         self.bids_dir = bids_dir
-        self.patient_ids = ['sub-' + id.split('case')[-1][1:] for id in patient_ids[-50:]]  # Use only the last 50 patient IDs
+        self.patient_ids = patient_ids[-50:]  # Use only the last 50 patient IDs
         self.session_id = session_id
         self.img_paths = self._retrieve_img_paths()
 

@@ -1,11 +1,10 @@
 import os
 import torch
 import torch.nn as nn
-import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset, SubsetRandomSampler, random_split
 import ants
 import numpy as np
-import UNet_modelv2 as unet2
+import UNet_modelv2_dropout as unet2
 from torchvision import transforms
 import random
 from torch.utils.tensorboard import SummaryWriter  
