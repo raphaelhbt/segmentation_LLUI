@@ -477,6 +477,7 @@ class BCEDiceLoss(nn.Module):
         intersection = (predictions_flat * targets_flat).sum(1)
         sum_pred_target = predictions_flat.sum(1) + targets_flat.sum(1)
         dice = (2. * intersection + self.epsilon) / (sum_pred_target + self.epsilon)
+        print('Dice:', dice)
         dice_loss = 1 - dice.mean()
  
         # Combine BCE and Dice Loss
