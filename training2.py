@@ -6,7 +6,6 @@ import torchio as tio
 from pathlib import Path
 from torch.utils.data import random_split, DataLoader
 from monai.networks.nets import DynUNet
-import torchmetrics.classification
 import torchmetrics.classification.dice
 from torchsummary import summary
 from torch.utils.tensorboard import SummaryWriter
@@ -102,7 +101,7 @@ class BCEDiceLoss(nn.Module):
 #--------------------------------------------------------------------------------------
 
 model_savepath = Path("saved_models")
-model_savepath_file = model_savepath / "best_model_UNet_StrokeLesion_Full_data_aug_new_loss_20_patches.pth"
+model_savepath_file = model_savepath / "best_model_UNet_StrokeLesion_nnUNet_data_aug_new_loss_20_patches_uniform_sampler.pth"
 
 epochs = 100
 val_interval = 5 #10 # at which every number of epochs validation should be computed
@@ -153,59 +152,106 @@ for subject_id in sub_folders:
     subjects.append(subject)
 
 
-# Define data augmentations 
+# Define data augmentations
+num1 = random.uniform(0.5, 1.5)
+num2 = random.uniform(0.5, 1.5)
+std_values = sorted([num1, num2])
+
 #nnU-Net data augmentation
-# def RandomBlur(x):
-#     prob_modality = 0.5
-#     do_blur = random.random() < prob_modality
-#     if do_blur:
-#         std = random.uniform(std_values[0], std_values[1])
-#         x = tio.RandomBlur(std=std)(x)
-#     return x
+def RandomBlur(x):
+    prob_modality = 0.5
+    do_blur = random.random() < prob_modality
+    if do_blur:
+        std = random.uniform(std_values[0], std_values[1])
+        x = tio.RandomBlur(std=std)(x)
+    return x
 
-# def RandomBrightness(x):
-#     factor = random.uniform(0.7, 1.3)
-#     x = x * factor
-#     return x
+def RandomBrightness(x):
+    factor = random.uniform(0.7, 1.3)
+    x = x * factor
+    return x
 
-# def RandomContrast(x):
-#     factor = random.uniform(0.65, 1.5)
-#     original_min = x.data.min().item()  # Get the original minimum intensity
-#     original_max = x.data.max().item()  # Get the original maximum intensity
-#     x.data *= factor
-#     x.data = x.data.clip(original_min, original_max)  # Clip the voxel intensities to the original range
-#     return x
+def RandomContrast(x):
+    factor = random.uniform(0.65, 1.5)
+    original_min = x.data.min().item()  # Get the original minimum intensity
+    original_max = x.data.max().item()  # Get the original maximum intensity
+    x.data *= factor
+    x.data = x.data.clip(original_min, original_max)  # Clip the voxel intensities to the original range
+    return x
 
-# def RandomLowResolution(x):
-#     modality_prob = 0.5
-#     do_low_res = random.random() < modality_prob
-#     factor = random.uniform(1, 2)
-#     if do_low_res:
-#         x = tio.Resample((factor, factor, factor),
-#                          image_interpolation='nearest')(x)
-#         x = tio.CropOrPad(x.shape, padding_mode='constant')(x)
-#     return x
+def RandomLowResolution(x):
+    modality_prob = 0.5
+    do_low_res = random.random() < modality_prob
+    if do_low_res:
+        anisotropy_transform = tio.RandomAnisotropy(
+            axes=(0, 1, 2),
+            downsampling=(1, 2),
+        )
+        x = anisotropy_transform(x)
+    return x
 
-# def RandomGamma(x):
-#     prob_prior_transform = 0.15
-#     do_prior_transform = random.random() < prob_prior_transform
-#     transform= tio.RandomGamma(log_gamma=(0.7, 1.5))
+def RandomGamma(x):
+    prob_prior_transform = 0.15
+    do_prior_transform = random.random() < prob_prior_transform
+    transform= tio.RandomGamma(log_gamma=(0.7, 1.5))
 
-#     mask = x.data != 0
+    mask = x.data != 0
 
-#     #Normalise image to [0, 1]
-#     x.data = (x.data - x.data.min()) / (x.data.max() - x.data.min() + 1e-6)
+    #Normalise image to [0, 1]
+    x.data = (x.data - x.data.min()) / (x.data.max() - x.data.min() + 1e-6)
 
-#     if do_prior_transform:
-#         x = 1 - transform(1 - x)
+    if do_prior_transform:
+        x = 1 - transform(1 - x)
     
-#     x = transform(x)
+    x = transform(x)
 
-#     #Scale back to original range
-#     x.data = x.data * (x.data.max() - x.data.min()) + x.data.min()
-#     x.data = x.data * mask
-#     return x
+    #Scale back to original range
+    x.data = x.data * (x.data.max() - x.data.min()) + x.data.min()
+    x.data = x.data * mask
+    return x
 
+transforms_nnUNet = tio.Compose([
+        tio.RandomAffine(
+            scales=(0.7, 1.4),  # only scaling from U(0.7,1.4)
+            isotropic=True,
+            default_pad_value=0,
+            p=0.16
+        ),
+        tio.RandomAffine(
+            degrees=30,  # This will be interpreted as (-30, 30) for each axis
+            isotropic=True,
+            default_pad_value=0,
+            p=0.16
+        ),
+        tio.RandomNoise(     # Add Gaussian noise with random parameters
+            mean=0, 
+            std=(0, 0.1),
+            exclude=['label'], 
+            p=0.15
+        ),
+        tio.Lambda(RandomBlur,
+                    p=0.2,
+                    ),
+        tio.Lambda(RandomBrightness, 
+                   types_to_apply=[tio.INTENSITY],
+                   p=0.15
+        ),
+        tio.Lambda(RandomContrast, 
+                   types_to_apply=[tio.INTENSITY],
+                   p=0.15
+        ),
+        tio.Lambda(RandomLowResolution, 
+                   p=0.25
+        ),
+        tio.Lambda(RandomGamma,
+                    types_to_apply=[tio.INTENSITY],
+                    p=0.15
+        ),
+        tio.RandomFlip(
+                    axes=(0, 1, 2), 
+                    p=0.5
+        ),
+])
 
 transforms = tio.Compose([
         tio.RandomAffine(
@@ -269,20 +315,6 @@ transforms = tio.Compose([
                     exclude=['label'], 
                     p=0.1
                 ),
-        # tio.Lambda(RandomBlur,
-        #             p=0.2,
-        #             ),
-        # tio.Lambda(lambda x: RandomBrightness, 
-        #            types_to_apply=[tio.INTENSITY],
-        #            p=0.15),
-        # tio.Lambda(lambda x: RandomContrast, 
-        #            types_to_apply=[tio.INTENSITY],
-        #            p=0.15),
-        # tio.Lambda(lambda x: RandomLowResolution, 
-        #            p=0.2),
-        # tio.Lambda(lambda x: RandomGamma,
-        #             types_to_apply=[tio.INTENSITY],
-        #             p=0.15),
 ])
 
 # create the SubjectsDataset
@@ -299,7 +331,7 @@ train_indices, val_indices = random_split(range(len(dataset) - 50), [train_size,
 train_subjects = [subjects[i] for i in train_indices]
 val_subjects = [subjects[i] for i in val_indices]
 
-train_dataset = tio.SubjectsDataset(train_subjects, transform=transforms)
+train_dataset = tio.SubjectsDataset(train_subjects, transform=transforms_nnUNet)
 val_dataset = tio.SubjectsDataset(val_subjects, transform=None)
 
 # PATCHED TRAINING SET
@@ -309,8 +341,10 @@ patch_size_train = 128
 samples_per_volume = 20
 max_queue_length = 50
 
+Uniform_sampler = tio.data.UniformSampler(patch_size = patch_size_train)
+
 # define sampler to perform foreground oversampling
-sampler = tio.data.LabelSampler(patch_size = patch_size_train,
+Label_sampler = tio.data.LabelSampler(patch_size = patch_size_train,
     label_name = 'label',
     label_probabilities = {0: 3, 1: 4}) # 33% oversampling of foreground
 
@@ -319,7 +353,7 @@ patches_training_set = tio.Queue(
     subjects_dataset = train_dataset,
     max_length = max_queue_length,
     samples_per_volume = samples_per_volume,
-    sampler = sampler,
+    sampler = Label_sampler,
     num_workers = num_workers,
     shuffle_subjects = True,
     shuffle_patches = True,
@@ -378,7 +412,7 @@ for epoch in range(epochs):
             "Train_Loss": average_epoch_loss,
             "Train_Dice": average_epoch_dice_train
         }
-    writer.add_scalars("New_script/Data_aug_new_loss_20_patches", metrics, epoch + 1)
+    writer.add_scalars("New_script/nnUNet_aug_new_loss_20_patches_uniform_sampler", metrics, epoch + 1)
 
     # update learning rate when using PolynomialLR
     #scheduler.step()
@@ -434,7 +468,7 @@ for epoch in range(epochs):
             "Val_Loss": average_epoch_val_loss,
             "Val_Dice": average_epoch_dice_val
         }
-        writer.add_scalars("New_script/Data_aug_new_loss_20_patches", metrics2, epoch + 1)
+        writer.add_scalars("New_script/nnUNet_aug_new_loss_20_patches_uniform_sampler", metrics2, epoch + 1)
         print(f"epoch {epoch + 1} average validation loss: {average_epoch_val_loss:.4f}, average validation dice: {average_epoch_dice_val:.4f}")
         
         # check if best model so far
