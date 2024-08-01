@@ -163,3 +163,5 @@ cython_debug/
 
 runs
 saved_models
+saving_images
+uncertainty_predictions

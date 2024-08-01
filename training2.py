@@ -36,7 +36,8 @@ filters = [32, 64, 128, 256, 320]
 # - norm_name: instance
 # - act_name: leaky relu (negative_slope 0.01)
 # - dropout: None
-    
+dropout = 0.2
+
 # Initialize the DynUNet
 model = DynUNet(
     spatial_dims=spatial_dims,
@@ -46,7 +47,7 @@ model = DynUNet(
     strides=strides,
     upsample_kernel_size=up_sample_kernel_size,
     filters=filters,
-    #dropout = dropout
+    dropout = dropout
 )
 
 # Print model summary
@@ -54,6 +55,36 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model.to(device)
 #summary(model, (in_channels, 128, 128, 128))
 
+# CORRECT THE DROPOUT
+# Function to remove a specified dropout layer
+def remove_dropout_layers(model, layer_indices):
+    # Flatten all model layers
+    layers = [module for module in model.modules()]
+    
+    # Find all dropout layers
+    dropout_layers = [layer for layer in layers if isinstance(layer, nn.Dropout)]
+    # Check if the specified layer indices are valid
+    for index in layer_indices:
+        if index < 1 or index > len(dropout_layers):
+            raise ValueError(f"Invalid layer index: {index}. Must be between 1 and {len(dropout_layers)}")
+    
+    # Remove the specified dropout layers
+    for layer_index in layer_indices:
+        # Get the dropout layer to remove
+        dropout_layer = dropout_layers[layer_index - 1]
+        
+        # Remove the dropout layer from the model
+        for name, module in model.named_modules():
+            if module == dropout_layer:
+                parent_module = dict(model.named_modules())[name.rsplit('.', 1)[0]]
+                for key, value in parent_module._modules.items():
+                    if value == dropout_layer:
+                        del parent_module._modules[key]
+                        break
+
+list_dropout_layers_to_remove = [1,3,5,7,9,11,12,14,15,17,18,20,21,22,23]
+remove_dropout_layers(model, list_dropout_layers_to_remove)
+#summary(model, (in_channels, 128, 128, 128))
 #--------------------------------------------------------------------------------------
 
 class BCEDiceLoss(nn.Module):
@@ -101,9 +132,9 @@ class BCEDiceLoss(nn.Module):
 #--------------------------------------------------------------------------------------
 
 model_savepath = Path("saved_models")
-model_savepath_file = model_savepath / "best_model_UNet_StrokeLesion_nnUNet_data_aug_new_loss_20_patches_uniform_sampler.pth"
+model_savepath_file = model_savepath / "best_model_UNet_StrokeLesion_nnUNet_aug_new_loss_20_patches_new_label_sampler_adam_dropout_200_epochs.pth"
 
-epochs = 100
+epochs = 200
 val_interval = 5 #10 # at which every number of epochs validation should be computed
 
 criterion_train = BCEDiceLoss() # BCE + Dice loss for training
@@ -348,12 +379,18 @@ Label_sampler = tio.data.LabelSampler(patch_size = patch_size_train,
     label_name = 'label',
     label_probabilities = {0: 3, 1: 4}) # 33% oversampling of foreground
 
+new_label_sampler = tio.data.sampler.LabelSampler_Pad4LabelPatches(
+    patch_size=patch_size_train,
+    label_name='label',
+    label_probabilities={0: 3, 1: 4},
+)
+
 num_workers = 2 
 patches_training_set = tio.Queue(              
     subjects_dataset = train_dataset,
     max_length = max_queue_length,
     samples_per_volume = samples_per_volume,
-    sampler = Label_sampler,
+    sampler = new_label_sampler,
     num_workers = num_workers,
     shuffle_subjects = True,
     shuffle_patches = True,
@@ -412,7 +449,7 @@ for epoch in range(epochs):
             "Train_Loss": average_epoch_loss,
             "Train_Dice": average_epoch_dice_train
         }
-    writer.add_scalars("New_script/nnUNet_aug_new_loss_20_patches_uniform_sampler", metrics, epoch + 1)
+    writer.add_scalars("New_script/nnUNet_aug_new_loss_20_patches_new_label_sampler_adam_dropout_200_epochs", metrics, epoch + 1)
 
     # update learning rate when using PolynomialLR
     #scheduler.step()
@@ -468,7 +505,7 @@ for epoch in range(epochs):
             "Val_Loss": average_epoch_val_loss,
             "Val_Dice": average_epoch_dice_val
         }
-        writer.add_scalars("New_script/nnUNet_aug_new_loss_20_patches_uniform_sampler", metrics2, epoch + 1)
+        writer.add_scalars("New_script/nnUNet_aug_new_loss_20_patches_new_label_sampler_adam_dropout_200_epochs", metrics2, epoch + 1)
         print(f"epoch {epoch + 1} average validation loss: {average_epoch_val_loss:.4f}, average validation dice: {average_epoch_dice_val:.4f}")
         
         # check if best model so far

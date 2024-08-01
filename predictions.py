@@ -5,19 +5,26 @@ import ants
 from torch.utils.data import DataLoader
 from monai.networks.nets import DynUNet
 from pathlib import Path
+import torchio as tio
+from torch.utils.data import random_split
+from tqdm import tqdm
+import torch.nn as nn
 
 # Parameters
-NB_FORWARD = 1000
+NB_FORWARD = 200
 dropout=0.5
 BATCH_SIZE = 2
-weights_path = '/home/user/Documents/raph/code/saved_models/best_model_UNet_StrokeLesion.pth'
+weights_path = '/home/user/Documents/raph/code/saved_models/best_model_UNet_StrokeLesion_nnUNet_data_aug_new_loss_20_patches_uniform_sampler.pth'
 
 bids_dir = Path('/home/user/Documents/raph/preprocessed_datasets/ISLES2022')
 parameters = ['FLAIR', 'ADC', 'dwi', 'msk']
 # Device configuration
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Model instantiation
+
+
+
+# Model instantiation ------------------------------------------------------------------------------------------
 # Define network parameters
 spatial_dims = 3
 in_channels = 3
@@ -42,6 +49,35 @@ model = DynUNet(
     filters=filters,
     dropout = dropout
 )
+# CORRECT THE DROPOUT
+# Function to remove a specified dropout layer
+def remove_dropout_layers(model, layer_indices):
+    # Flatten all model layers
+    layers = [module for module in model.modules()]
+    
+    # Find all dropout layers
+    dropout_layers = [layer for layer in layers if isinstance(layer, nn.Dropout)]
+    # Check if the specified layer indices are valid
+    for index in layer_indices:
+        if index < 1 or index > len(dropout_layers):
+            raise ValueError(f"Invalid layer index: {index}. Must be between 1 and {len(dropout_layers)}")
+    
+    # Remove the specified dropout layers
+    for layer_index in layer_indices:
+        # Get the dropout layer to remove
+        dropout_layer = dropout_layers[layer_index - 1]
+        
+        # Remove the dropout layer from the model
+        for name, module in model.named_modules():
+            if module == dropout_layer:
+                parent_module = dict(model.named_modules())[name.rsplit('.', 1)[0]]
+                for key, value in parent_module._modules.items():
+                    if value == dropout_layer:
+                        del parent_module._modules[key]
+                        break
+
+list_dropout_layers_to_remove = [1,3,5,7,9,11,12,14,15,17,18,20,21,22,23]
+remove_dropout_layers(model, list_dropout_layers_to_remove)
 
 # Loading the weights
 state_dict = torch.load(weights_path)
@@ -49,6 +85,65 @@ state_dict = torch.load(weights_path)
 # Loading the weights into the model
 model.load_state_dict(state_dict)
 model.to(DEVICE)
+# ------------------------------------------------------------------------------------------------------------
+
+
+
+
+# Dataset and DataLoader --------------------------------------------------------------------------------------
+bids_dir = Path('/home/user/Documents/raph/preprocessed_datasets/ISLES2022')
+
+# List all directories in the parent directory that start with 'sub-'
+sub_folders = [p.name for p in bids_dir.iterdir() if p.is_dir() and p.name.startswith('sub-')]
+
+# loop over all subjects to get relevant images/labels         
+subjects = []
+for subject_id in sub_folders:
+
+    # get all images and labelmap of subject
+    FLAIR_path = os.path.join(bids_dir, subject_id, "ses-0001", "anat", f"{subject_id}_ses-0001_FLAIR.nii.gz")
+    dwi_path = os.path.join(bids_dir, subject_id, "ses-0001", "dwi", f"{subject_id}_ses-0001_dwi.nii.gz")
+    adc_path = os.path.join(bids_dir, subject_id, "ses-0001", "dwi", f"{subject_id}_ses-0001_ADC.nii.gz")
+    mask_path = os.path.join(bids_dir, "derivatives", subject_id, "ses-0001", f"{subject_id}_ses-0001_msk.nii.gz")
+
+    # create a subject
+    subject = tio.Subject(
+        flair=tio.ScalarImage(FLAIR_path),
+        dwi=tio.ScalarImage(dwi_path),
+        adc=tio.ScalarImage(adc_path),
+        label=tio.LabelMap(mask_path),
+    )
+
+    # add subject to list
+    subjects.append(subject)
+
+# create the SubjectsDataset
+dataset = tio.SubjectsDataset(subjects, transform=None)
+
+# split data into training and validation set
+test_size = 50
+train_percent = 0.8
+train_size = int(train_percent * (len(dataset) - 50)) #160
+val_size = len(dataset) - train_size - test_size #40
+
+train_indices, val_indices = random_split(range(len(dataset) - 50), [train_size, val_size])
+
+
+def filter_global_list(global_list, portion_list1, portion_list2):
+    # Combine portion_list1 and portion_list2 into a set for efficient lookup
+    portions_set = set(portion_list1 + portion_list2)
+    
+    # Filter out elements from global_list that are present in portions_set
+    filtered_list = [item for idx, item in enumerate(global_list) if idx not in portions_set]
+    
+    return filtered_list
+
+test_subjects= filter_global_list(subjects, train_indices, val_indices)
+
+test_dataset = tio.SubjectsDataset(test_subjects, transform=None)
+# ------------------------------------------------------------------------------------------------------------
+
+# Function to conmpute uncertainty estimation ----------------------------------------------------------------
 
 # Dropout activation and deactivation
 def enable_dropout(model):
@@ -56,129 +151,78 @@ def enable_dropout(model):
 	for m in model.modules():
 		if m.__class__.__name__.startswith('Dropout'):
 			m.train()
-			
-def predict(net, inputs):
-	# to store n_forward predictions on the same batch
-	dropout_predictions = torch.empty((0,inputs.size(0),inputs.size(1),inputs.size(2),inputs.size(3)))
 
-	# bayesian inference
-	for f_pass in range(NB_FORWARD):
-		with torch.no_grad():
-			# predict with dropout
-			enable_dropout(net)
-			mask_pred = net(inputs)
+savepath = Path('uncertainty_predictions')
 
-            # concatenate prediction to the other made on the same batch
-			dropout_predictions = torch.cat((dropout_predictions,mask_pred.cpu().softmax(dim=1).unsqueeze(dim=0)),dim=0) # Output shape is (n_forward, batch_size, 128, 128, 128)
-			
-	# Take the mean across the 0th dimension to reduce shape to (batch_size, 128, 128, 128)
-	dropout_predictions_mean = dropout_predictions.mean(dim=0)
-
-	return dropout_predictions_mean
-
-#Helpers
-def get_patient_ids(file_path):
+# Function to save the images
+def saving_images(subject, predictions, savedir, kind):
+    # kind = 'mean' or 'std'
+    # Create the directory if it does not exist
+    if not os.path.exists(savedir):
+        os.makedirs(savedir)
     
-    """
-    Get all patient IDs from a TSV file.
+    # Extract the patient number from the subject path:
+    patient_number = subject['flair'].path.parts[-1]
 
-    Parameters:
-        file_path (str): The path to the TSV file containing patient IDs.
+    # Create the output path
+    output_savepath = os.path.join(savedir, f'{patient_number}_{kind}.nii.gz')
 
-    Returns:
-        list: A list containing all patient IDs extracted from the TSV file.
-    """
+    # Extract the affine matrix from the subject's flair image
+    affine_matrix = subject['flair'].affine
+    # Save the image
+    uncertainty_image = tio.ScalarImage(tensor = predictions, affine=affine_matrix)
+    uncertainty_image.save(output_savepath)
     
-    sub_folders = [p.name for p in bids_dir.iterdir() if p.is_dir() and p.name.startswith('sub-')]
-    
-    return sub_folders
+# ------------------------------------------------------------------------------------------------------------
 
-def retrieve_img_paths(bids_dir, parameters, subject_id, session_id):
-    """
-    Retrieve the paths of the input images from the BIDS directory.
-
-    Arguments:
-        bids_dir (str): The path to the BIDS directory.
-        parameters (list): A list of the parameters to be extracted.
-        subject_id (str): The ID of the subject.
-        session_id (str): The ID of the session.
-
-    Returns:
-        list: A list containing the paths of the input images.
-    """
-    img_paths = []
-    for parameter in parameters:
-        if parameter == 'adc' or parameter == 'dwi':
-            # Create the path to the NIfTI file (DWI & ADC)
-            file_path = os.path.join(bids_dir, f"{subject_id}", f"ses-{session_id}", "dwi", f"{subject_id}_ses-{session_id}_{parameter}.nii.gz")
-        elif parameter == 'FLAIR':
-            # Create the path to the NIfTI file (FLAIR)
-            file_path = os.path.join(bids_dir, f"{subject_id}", f"ses-{session_id}", "anat", f"{subject_id}_ses-{session_id}_{parameter}.nii.gz")
-        elif parameter == 'msk':
-            # Create the path to the NIfTI file (MASK)
-            file_path = os.path.join(bids_dir, "derivatives", f"{subject_id}", f"ses-{session_id}", f"{subject_id}_ses-{session_id}_{parameter}.nii.gz")
-        img_paths.append(file_path)
-
-    for i, path in enumerate(img_paths):
-        if not os.path.exists(path):
-            print(f"Warning: NIfTI file for parameter {parameters[i]} not found for subject {subject_id} and session {session_id}. Skipping.")
-            return None
-
-    return img_paths
-		
-class TestDataset(torch.utils.data.Dataset):
-    def __init__(self, bids_dir, patient_ids, session_id='0001'):
-        self.bids_dir = bids_dir
-        self.patient_ids = patient_ids[-50:]  # Use only the last 50 patient IDs
-        self.session_id = session_id
-        self.img_paths = self._retrieve_img_paths()
-
-    def _retrieve_img_paths(self):
-        img_paths = []
-        for patient_id in self.patient_ids:
-            paths = retrieve_img_paths(self.bids_dir, parameters, patient_id, self.session_id)
-            if paths is not None:
-                img_paths.append(paths)
-        return img_paths
-
-    def __len__(self):
-        return len(self.img_paths)
-
-    def __getitem__(self, idx):
-        paths = self.img_paths[idx]
-        FLAIR_path, adc_path, dwi_path, msk_path = paths
-
-        # Load images
-        FLAIR_img = torch.tensor(ants.image_read(FLAIR_path).numpy(), dtype=torch.float32)
-        adc_img = torch.tensor(ants.image_read(adc_path).numpy(), dtype=torch.float32)
-        dwi_img = torch.tensor(ants.image_read(dwi_path).numpy(), dtype=torch.float32)
-        msk_img = torch.tensor(ants.image_read(msk_path).numpy().squeeze(), dtype=torch.float32)  # Mask
-  
-        concatenated_data = torch.stack((FLAIR_img, adc_img, dwi_img), dim=0)
-        concatenated_data = concatenated_data.type(torch.float32)
-        return concatenated_data, msk_img
-    
-# Load the test dataset
-test_dataset = TestDataset(bids_dir, get_patient_ids(os.path.join(bids_dir, "participants.tsv")))
-
-# Create a DataLoader for the test dataset
-test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
-
+# Test loop ----------------------------------------------------------------------------------------------
 # Set the model to evaluation mode
 model.eval()
 
+# predict with dropout
+enable_dropout(model)
+
+# batch size used in validation
+batch_size_test = 4
+
+# patch size and overlap for gridSampler used in validation
+patch_size_test= 128
+patch_overlap_test = 64
+
 # Iterate over the test dataset
 with torch.no_grad():
-    for i, (inputs, targets) in enumerate(test_loader):
+    # loop over all subject in validation set
+    for subject in tqdm(test_dataset):
+        # define GridSampler for current subject
+        grid_sampler = tio.inference.GridSampler(
+            subject = subject,  
+            patch_size = patch_size_test,
+            patch_overlap = patch_overlap_test,
+            padding_mode = 'constant'
+        )
+        patch_loader = torch.utils.data.DataLoader(grid_sampler, batch_size = batch_size_test, shuffle = True)
+        aggregator = tio.inference.GridAggregator(grid_sampler, overlap_mode = 'hann')
 
-        ## IMAGES ARE CORRECTLY LOADED BUT HAVE TO TRY THE REST OF THE CODE
-        # Move the inputs and targets to the device
-        inputs = inputs.to(DEVICE)
-        targets = targets.to(DEVICE)
+        # to store n_forward predictions on the same batch
+        dropout_predictions = torch.empty((0, 1, 182, 218, 182))
+        
+        # loop over patches to get mean model predictions
+        for f_pass in range(NB_FORWARD):
+            for patches_batch in patch_loader:
+                patch_inputs = torch.cat([patches_batch['flair'][tio.DATA], patches_batch['dwi'][tio.DATA], patches_batch['adc'][tio.DATA]], dim=1).to(DEVICE)
+                patch_locations = patches_batch[tio.LOCATION]
+                with torch.no_grad():
+                    patch_prediction = model(patch_inputs)
 
-        # Perform the forward pass
-        outputs= predict(model, inputs)
+                # aggregate the mean over patches
+                patch_prediction_logits = torch.sigmoid(patch_prediction)
+                aggregator.add_batch(patch_prediction_logits, patch_locations)
 
-        # Save the outputs
-        ants_image = ants.image_write(ants.from_numpy(outputs[0].numpy()), 'output.nii.gz')
+            # concatenate prediction to the other made on the same batch
+            dropout_predictions = torch.cat((dropout_predictions, aggregator.get_output_tensor().cpu().unsqueeze(dim=0)),dim=0) # Output shape is (n_forward, batch_size, 128, 128, 128)
 
+        # save the mean and std of the predictions
+        saving_images(subject, dropout_predictions.mean(dim=0), savepath, 'mean')
+        saving_images(subject, dropout_predictions.std(dim=0), savepath, 'std')
+
+        print('one done')
