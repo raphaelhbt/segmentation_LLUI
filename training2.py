@@ -15,6 +15,7 @@ import random
 import torch.nn as nn
 import torchmetrics
 import numpy as np
+import gc
 
 # Set all random seed for reproducibility
 random.seed(0)
@@ -440,6 +441,11 @@ for epoch in range(epochs):
         epoch_loss_train.append(loss.item())
         epoch_dice_train.append(dice_train.item())
 
+        # Memory management training 1
+        del inputs, labels, outputs, loss, dice_train, BCE_train
+        torch.cuda.empty_cache()
+        gc.collect()
+
     average_epoch_loss = sum(epoch_loss_train) / len(epoch_loss_train)    
     average_epoch_dice_train = sum(epoch_dice_train) / len(epoch_dice_train)
 
@@ -455,6 +461,11 @@ for epoch in range(epochs):
     #scheduler.step()
     #print(f"Epoch {epoch + 1}/{epochs}, Learning Rate: {scheduler.get_last_lr()[0]:.5f}")  
     
+    #Memory management training 2
+    del epoch_loss_train, epoch_dice_train, average_epoch_loss, average_epoch_dice_train, metrics
+    torch.cuda.empty_cache()
+    gc.collect() 
+
 # VALIDATION
     if (epoch + 1) % val_interval == 0:
 
@@ -520,6 +531,10 @@ for epoch in range(epochs):
                 epoch + 1, average_epoch_dice_val, best_metric, best_metric_epoch
             )
         )
+        #Memory management validation
+        del grid_sampler, patch_loader, aggregator, patch_inputs, patch_locations, patch_prediction, patch_prediction_logits, aggregated_logits, ground_truth_seg, loss_val, dice, BCE, average_epoch_val_loss, average_epoch_dice_val, epoch_loss_val, dice_scores, metrics2
+        torch.cuda.empty_cache()
+        gc.collect()
 
 print(f"train completed, best_metric: {best_metric:.4f} at epoch: {best_metric_epoch}")
 writer.close()

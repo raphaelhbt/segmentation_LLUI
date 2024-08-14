@@ -32,7 +32,7 @@ choice_brain_extraction = input("Do you want to perform the brain extraction ? (
 # FUNCTIONS DEFINITIONS
 def brain_extraction(bids_dir, parameters, temp_save_location, subject_id, session_id):
     """
-    Perform brain extraction on the input images.
+    Perform brain extraction on the input images. The brain extraction is performed using FSL's BET.
 
     Arguments:
         bids_dir (str): The path to the BIDS directory.

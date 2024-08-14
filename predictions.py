@@ -9,12 +9,13 @@ import torchio as tio
 from torch.utils.data import random_split
 from tqdm import tqdm
 import torch.nn as nn
+import numpy as np
 
 # Parameters
 NB_FORWARD = 200
 dropout=0.5
 BATCH_SIZE = 2
-weights_path = '/home/user/Documents/raph/code/saved_models/best_model_UNet_StrokeLesion_nnUNet_data_aug_new_loss_20_patches_uniform_sampler.pth'
+weights_path = '/home/user/Documents/raph/code/saved_models/best_model_UNet_StrokeLesion_nnUNet_aug_new_loss_20_patches_new_label_sampler_adam_dropout_200_epochs.pth'
 
 bids_dir = Path('/home/user/Documents/raph/preprocessed_datasets/ISLES2022')
 parameters = ['FLAIR', 'ADC', 'dwi', 'msk']
@@ -152,10 +153,25 @@ def enable_dropout(model):
 		if m.__class__.__name__.startswith('Dropout'):
 			m.train()
 
+# Function to compute the volume of the '1' class in a 3D mask
+def compute_volume(mask):
+    """
+    Computes the volume of the '1' class in a 3D mask.
+    
+    Parameters:
+    mask (numpy.ndarray): A 3D NumPy array with values 0 and 1.
+    
+    Returns:
+    int: The volume of the '1' class in the mask.
+    """
+    mask_np = mask.cpu().numpy()
+    volume = np.sum(mask_np) + 1 # Add 1 to avoid division by zero
+    return volume
+
 savepath = Path('uncertainty_predictions')
 
 # Function to save the images
-def saving_images(subject, predictions, savedir, kind):
+def saving_images(subject, predictions, savedir, kind, mask_volume=None):
     # kind = 'mean' or 'std'
     # Create the directory if it does not exist
     if not os.path.exists(savedir):
@@ -164,8 +180,18 @@ def saving_images(subject, predictions, savedir, kind):
     # Extract the patient number from the subject path:
     patient_number = subject['flair'].path.parts[-1]
 
-    # Create the output path
-    output_savepath = os.path.join(savedir, f'{patient_number}_{kind}.nii.gz')
+    #####################
+    if mask_volume is not None:
+        # Compute the volume of the '1' class in the mask
+        mean_value = torch.mean(predictions)
+        print('mean', mean_value)
+        ratio = mean_value / mask_volume
+        # Create the output path
+        output_savepath = os.path.join(savedir, f'{patient_number}_{kind}_mean_{mean_value:.5f}_volume_{mask_volume:.2f}_ratio_{ratio:.10f}.nii.gz')
+    #####################
+    else:
+        # Create the output path
+        output_savepath = os.path.join(savedir, f'{patient_number}_{kind}.nii.gz')
 
     # Extract the affine matrix from the subject's flair image
     affine_matrix = subject['flair'].affine
@@ -205,7 +231,7 @@ with torch.no_grad():
 
         # to store n_forward predictions on the same batch
         dropout_predictions = torch.empty((0, 1, 182, 218, 182))
-        
+
         # loop over patches to get mean model predictions
         for f_pass in range(NB_FORWARD):
             for patches_batch in patch_loader:
@@ -221,8 +247,17 @@ with torch.no_grad():
             # concatenate prediction to the other made on the same batch
             dropout_predictions = torch.cat((dropout_predictions, aggregator.get_output_tensor().cpu().unsqueeze(dim=0)),dim=0) # Output shape is (n_forward, batch_size, 128, 128, 128)
 
+        #####################
+        # Compute the volume of the '1' class in the mask
+        mask = dropout_predictions.mean(dim=0)
+        # Binarize the mask to 0 or 1 where the threshold is 0.5
+        mask[mask >= 0.5] = 1
+        mask_volume = compute_volume(mask)
+        print('volume', mask_volume)
+        #####################
+
         # save the mean and std of the predictions
         saving_images(subject, dropout_predictions.mean(dim=0), savepath, 'mean')
-        saving_images(subject, dropout_predictions.std(dim=0), savepath, 'std')
+        saving_images(subject, dropout_predictions.std(dim=0), savepath, 'std', mask_volume)
 
         print('one done')

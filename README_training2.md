@@ -2,6 +2,8 @@
 
 This project trains a 3D U-Net model for stroke lesion segmentation using the MONAI and TorchIO libraries. The data used is the ISLES2022 dataset, preprocessed into the BIDS format using the preprocessing.py file.
 
+Best result: Combination of parameter number 9 (see in [Parameters Tried]) which reached a mean dice of 0.7420, with a median of 0.79 and a standard deviation of 0.15.
+ 
 ## Table of Contents
 
 - [Requirements](#requirements)
@@ -279,6 +281,39 @@ Results (on validation set with best model):
 Dice mean = 0.7420, median = 0.79, standard deviation = 0.16
 
 Note: This training was interrupted after 201 epoch because the computer crashed but we can se that the model is still training. --> To do again.
+
+
+**9th attempt:**
+model name: best_model_UNet_StrokeLesion_nnUNet_aug_new_loss_20_patches_new_label_sampler_adam_dropout_200_epochs.pth
+tensorboard graph name: nnUNet_aug_new_loss_20_patches_new_label_sampler_adam_dropout_200_epochs
+
+Parameters:
+- Use of adam with lr = 1e-3
+- 20 images per patch
+- new label sampler 
+- nnU-Net's data augmentation
+- 20 % Dropout applied only once at each downsampling/upsampling step but the last upsampling step. Also applied once in the bottleneck.
+- 200 epochs
+
+Results (on validation set with best model):
+Dice mean = 0.7434, median = 0.79, standard deviation = 0.15
+
+
+**10th attempt:**
+model name: best_model_UNet_StrokeLesion_nnUNet_aug_new_loss_20_patches_label_sampler_SGD_500_epochs.pth
+tensorboard graph name: nnUNet_aug_new_loss_20_patches_label_sampler_SGD_500_epochs
+
+Parameters:
+- Use of SGD with lr scheduler 
+- 20 images per patch
+- new label sampler 
+- nnU-Net's data augmentation
+- No Dropout
+- 500 epochs
+
+Results (on validation set with best model):
+Dice mean = 0.7375, median = 0.79, standard deviation = 0.15
+
 ## Usage
 To train the model, go to the associated repository in the terminal and then type:
 ```bash
