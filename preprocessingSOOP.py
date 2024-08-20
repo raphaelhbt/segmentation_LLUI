@@ -142,7 +142,7 @@ def registration(img_paths, template_address):
 
     for i in range(len(registered_paths)):
         registered_clean = registered_mask4registration * ants.image_read(registered_paths[i])
-        registered_clean.plot()
+        #registered_clean.plot()
         ants.image_write(registered_clean, registered_paths[i]) 
 
     return registered_paths

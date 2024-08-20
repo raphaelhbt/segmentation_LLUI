@@ -249,9 +249,10 @@ with torch.no_grad():
 
         #####################
         # Compute the volume of the '1' class in the mask
-        mask = dropout_predictions.mean(dim=0)
+        dp_mean = dropout_predictions.mean(dim=0)
+
         # Binarize the mask to 0 or 1 where the threshold is 0.5
-        mask[mask >= 0.5] = 1
+        mask = (dp_mean >= 0.5).to(torch.int)
         mask_volume = compute_volume(mask)
         print('volume', mask_volume)
         #####################
