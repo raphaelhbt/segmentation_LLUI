@@ -15,8 +15,6 @@ Usage of the files:
 
 **preprocessingSOOP.py** : file to preprocess the SOOP dataset.
 
-**test.ipynb** : just a dummy file used to test new things before implementing them in the real code.
-
 **training_plotting.ipynb** : File used to:
 - Overlay the model's predictions with the groundtruth on the FLAIR image of the patient. The cursor allows to go through the different 2D plans of the 3D volume. There is also a boxplot of the Dices + Median and std printed.
 - Compute the uncertainty rates and boxplot them, with mean, median and std.
@@ -28,3 +26,13 @@ Usage of the files:
 **training.py** : first training loop with whole patch extraction and almost everything hard coded by hand. It works but there is an issue in the code that prevents us from having good results.
 
 **training2.py** : Working training loop. See the other readme file to know more about it.
+
+Content of the folders:
+
+**runs** : Contains the tensorboard plots of all trainings.
+
+**saved_models** : Contains the models saved from the training.
+
+**template_registration** : Contains the MNI 152 template used for registration during preprocessing.
+
+**uncertainty_predictions** : Contains the MCD uncertainty maps predicted by the predictions.py file.
